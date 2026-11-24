@@ -62,6 +62,12 @@ storage/temp/session_state.json
 scratch/
 inspect/
 
+# Runtime-generated overlay masks & borders
+assets/gameplay_border.png
+assets/gameplay_mask.png
+assets/webcam_border.png
+assets/webcam_mask.png
+
 # OS-generated files
 .DS_Store
 Thumbs.db
