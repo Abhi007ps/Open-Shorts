@@ -4122,50 +4122,10 @@ function updateCamShapeBadge() {
 }
 
 function updateCamHandleUI() {
-  const handle = document.getElementById("drag-cam-handle");
-  const sizeText = document.getElementById("reticle-size-text");
-  const sizePill = document.getElementById("reticle-size-badge");
-  if (!handle) return;
-
-  const shape = state.template.webcam_shape || "circle";
-  const isSplit = shape === "split_screen" || state.template.layout_mode === "split_screen" || ((state.template.webcam_w || 0) >= 1000 && (state.template.webcam_h || 0) >= 500);
-
-  if (isSplit) {
-    // In Split-Screen mode, facecam occupies the top half cleanly without an obscuring dashed border
-    handle.style.display = "none";
-    return;
-  }
-  handle.style.display = "block";
-
   const w = state.template.webcam_w || 300;
   const h = state.template.webcam_h || 300;
   const posX = state.template.webcam_x !== undefined ? state.template.webcam_x : Math.round((1080 - w) / 2);
   const posY = state.template.webcam_y !== undefined ? state.template.webcam_y : 540;
-
-  // Position and size as exact percentage of 1080x1920 canvas phone screen
-  const pctLeft = (posX / 1080) * 100;
-  const pctTop = (posY / 1920) * 100;
-  const pctW = (w / 1080) * 100;
-  const pctH = (h / 1920) * 100;
-
-  handle.style.left = `${pctLeft}%`;
-  handle.style.top = `${pctTop}%`;
-  handle.style.width = `${pctW}%`;
-  handle.style.height = `${pctH}%`;
-
-  const handles = handle.querySelectorAll(".cam-resize-handle");
-  if (shape === "circle") {
-    handle.style.borderRadius = "50%";
-  } else {
-    const r = state.template.webcam_radius || 28;
-    handle.style.borderRadius = `${Math.round(r * 0.35)}px`;
-  }
-  if (sizePill) sizePill.style.display = "flex";
-  handles.forEach(el => el.style.display = "block");
-
-  if (sizeText) {
-    sizeText.innerText = (w === h) ? `${Math.round(w)}px` : `${Math.round(w)}×${Math.round(h)}`;
-  }
 
   const sX = document.getElementById("slider-cam-x");
   const vX = document.getElementById("val-cam-x");
@@ -4187,7 +4147,14 @@ function updateCamHandleUI() {
   if (posBadge) {
     posBadge.innerText = `(x=${Math.round(posX)}, y=${Math.round(posY)})`;
   }
+
+  const handle = document.getElementById("drag-cam-handle");
+  if (handle) {
+    handle.style.display = "none";
+  }
 }
+window.updateCamHandleUI = updateCamHandleUI;
+window.updateFacecamHandleUI = updateCamHandleUI;
 
 function updateCamShapeUI(doTrigger = true) {
   const shape = state.template.webcam_shape || "circle";
@@ -4325,198 +4292,14 @@ function adjustCamSize(delta) {
 }
 
 function initDraggableFacecam() {
+  // Safe no-op stub: floating facecam drag/resize square overlay removed from 9:16 preview window
   const handle = document.getElementById("drag-cam-handle");
-  const phone = document.getElementById("phone-screen");
-  if (!handle || !phone) return;
-
-  let isDragging = false;
-  let isResizing = false;
-  let resizeCorner = null;
-  let dragOffset = { x: 0, y: 0 };
-  let resizeStart = { clientX: 0, clientY: 0, w: 300, h: 300, x: 0, y: 0 };
-
-  const onStart = (e) => {
-    // If user clicked or touched a resize handle or size button, do not start position drag
-    if (e.target.closest(".cam-resize-handle") || e.target.closest(".reticle-size-pill")) {
-      return;
-    }
-    const shape = state.template.webcam_shape || "circle";
-    if (shape === "split_screen") return;
-
-    isDragging = true;
-    handle.style.cursor = "grabbing";
-
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    const rect = phone.getBoundingClientRect();
-
-    const canvasX = ((clientX - rect.left) / rect.width) * 1080;
-    const canvasY = ((clientY - rect.top) / rect.height) * 1920;
-
-    const curX = state.template.webcam_x !== undefined ? state.template.webcam_x : Math.round((1080 - (state.template.webcam_w || 300)) / 2);
-    const curY = state.template.webcam_y !== undefined ? state.template.webcam_y : 540;
-
-    dragOffset.x = canvasX - curX;
-    dragOffset.y = canvasY - curY;
-    e.preventDefault();
-  };
-
-  const onMove = (e) => {
-    if (isDragging) {
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      const rect = phone.getBoundingClientRect();
-
-      const canvasX = ((clientX - rect.left) / rect.width) * 1080;
-      const canvasY = ((clientY - rect.top) / rect.height) * 1920;
-
-      const w = state.template.webcam_w || 300;
-      const h = state.template.webcam_h || 300;
-
-      let posX = Math.round(canvasX - dragOffset.x);
-      let posY = Math.round(canvasY - dragOffset.y);
-
-      posX = Math.max(0, Math.min(1080 - w, posX));
-      posY = Math.max(20, Math.min(1920 - h - 20, posY));
-
-      state.template.webcam_x = posX;
-      state.template.webcam_y = posY;
-      updateCamHandleUI();
-      return;
-    }
-
-    if (isResizing) {
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      const rect = phone.getBoundingClientRect();
-
-      const dx = ((clientX - resizeStart.clientX) / rect.width) * 1080;
-      const dy = ((clientY - resizeStart.clientY) / rect.height) * 1920;
-
-      const shape = state.template.webcam_shape || "circle";
-      const isSquare = (shape === "circle" || shape === "square");
-      const aspect = resizeStart.w / resizeStart.h;
-
-      let newW = resizeStart.w;
-      let newH = resizeStart.h;
-      let newX = resizeStart.x;
-      let newY = resizeStart.y;
-
-      if (resizeCorner === "br") {
-        newW = Math.max(120, Math.min(840, resizeStart.w + dx));
-        newH = isSquare ? newW : Math.round(newW / aspect);
-      } else if (resizeCorner === "bl") {
-        const rawW = resizeStart.w - dx;
-        newW = Math.max(120, Math.min(840, rawW));
-        newH = isSquare ? newW : Math.round(newW / aspect);
-        newX = resizeStart.x + (resizeStart.w - newW);
-      } else if (resizeCorner === "tr") {
-        newW = Math.max(120, Math.min(840, resizeStart.w + dx));
-        newH = isSquare ? newW : Math.round(newW / aspect);
-        newY = resizeStart.y + (resizeStart.h - newH);
-      } else if (resizeCorner === "tl") {
-        const rawW = resizeStart.w - dx;
-        newW = Math.max(120, Math.min(840, rawW));
-        newH = isSquare ? newW : Math.round(newW / aspect);
-        newX = resizeStart.x + (resizeStart.w - newW);
-        newY = resizeStart.y + (resizeStart.h - newH);
-      }
-
-      newX = Math.max(0, Math.min(1080 - newW, newX));
-      newY = Math.max(20, Math.min(1920 - newH - 20, newY));
-
-      state.template.webcam_w = Math.round(newW);
-      state.template.webcam_h = Math.round(newH);
-      state.template.webcam_x = Math.round(newX);
-      state.template.webcam_y = Math.round(newY);
-      if (shape === "circle") {
-        state.template.webcam_radius = Math.round(newW / 2);
-      }
-
-      const sW = document.getElementById("slider-cam-w");
-      const sH = document.getElementById("slider-cam-h");
-      const vW = document.getElementById("val-cam-w");
-      const vH = document.getElementById("val-cam-h");
-      if (sW) sW.value = Math.round(newW);
-      if (sH) sH.value = Math.round(newH);
-      if (vW) vW.innerText = `${Math.round(newW)}px`;
-      if (vH) vH.innerText = `${Math.round(newH)}px`;
-
-      updateCamHandleUI();
-      updateCamShapeBadge();
-    }
-  };
-
-  const onEnd = () => {
-    if (isDragging) {
-      isDragging = false;
-      handle.style.cursor = "grab";
-      requestPreviewUpdate();
-    }
-    if (isResizing) {
-      isResizing = false;
-      resizeCorner = null;
-      requestPreviewUpdate();
-    }
-  };
-
-  handle.addEventListener("mousedown", onStart);
-  window.addEventListener("mousemove", onMove);
-  window.addEventListener("mouseup", onEnd);
-
-  handle.addEventListener("touchstart", onStart, { passive: false });
-  window.addEventListener("touchmove", onMove, { passive: false });
-  window.addEventListener("touchend", onEnd);
-
-  // Mouse wheel scaling on the reticle (easy resize directly on stream phone!)
-  handle.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const delta = e.deltaY < 0 ? 20 : -20;
-    adjustCamSize(delta);
-  }, { passive: false });
-
-  // 4 Corner interactive resize handles
-  handle.querySelectorAll(".cam-resize-handle").forEach(h => {
-    const corner = h.getAttribute("data-corner");
-    const onCornerStart = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      isResizing = true;
-      resizeCorner = corner;
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      resizeStart = {
-        clientX,
-        clientY,
-        w: state.template.webcam_w || 300,
-        h: state.template.webcam_h || 300,
-        x: state.template.webcam_x !== undefined ? state.template.webcam_x : Math.round((1080 - (state.template.webcam_w || 300)) / 2),
-        y: state.template.webcam_y !== undefined ? state.template.webcam_y : 540
-      };
-    };
-    h.addEventListener("mousedown", onCornerStart);
-    h.addEventListener("touchstart", onCornerStart, { passive: false });
-  });
-
-  // Reticle floating size +/- quick buttons
-  const btnDec = document.getElementById("btn-cam-size-dec");
-  const btnInc = document.getElementById("btn-cam-size-inc");
-  if (btnDec) {
-    btnDec.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      adjustCamSize(-20);
-    });
+  if (handle) {
+    handle.style.display = "none";
   }
-  if (btnInc) {
-    btnInc.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      adjustCamSize(+20);
-    });
+  if (typeof updateCamHandleUI === "function") {
+    updateCamHandleUI();
   }
-
-  updateCamHandleUI();
 }
 
 function initEnhancePresets() {
