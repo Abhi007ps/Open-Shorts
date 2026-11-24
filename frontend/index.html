@@ -9,56 +9,57 @@
 </head>
 <body>
 
-  <!-- Minimalist Studio Top Bar -->
+  <!-- Slim 52px Studio Top Bar -->
   <header>
     <div class="logo-group">
-      <div class="logo-badge">
-        <i class="fa-solid fa-bolt"></i> OPENSHORTS
+      <div class="logo-wordmark">
+        <i class="fa-solid fa-bolt" style="color: var(--accent);"></i>
+        <span class="logo-text">OpenShorts</span>
+        <span class="pro-badge">STUDIO</span>
       </div>
-      <div class="header-title">
-        <h1>Studio Pro <span class="pro-badge">ULTRA</span></h1>
-      </div>
-    </div>
-    <div class="header-actions">
+
       <!-- Interactive Hardware Acceleration Selector -->
       <div class="hw-selector-wrapper">
-        <div id="hw-status-badge" class="badge" title="Hardware Acceleration Engine • Click to select available encoder" style="cursor: pointer; user-select: none;">
-          <i class="fa-solid fa-microchip" style="color: var(--accent-lime);"></i>
+        <div id="hw-status-badge" class="hw-pill-badge" title="Hardware Acceleration Engine • Click to select available encoder" style="cursor: pointer; user-select: none;">
+          <span class="hw-dot"></span>
           <span id="hw-status-text">Detecting Hardware...</span>
-          <i class="fa-solid fa-chevron-down" style="font-size: 9px; margin-left: 4px; opacity: 0.7;"></i>
+          <i class="fa-solid fa-chevron-down" style="font-size: 8px; margin-left: 2px; opacity: 0.6;"></i>
         </div>
         
         <!-- Hardware Selection Dropdown Popover -->
         <div id="hw-selector-dropdown" class="hw-dropdown" style="display: none;">
           <div class="hw-dropdown-header">
             <div style="font-size: 11px; font-weight: 700; color: #FFFFFF; display: flex; align-items: center; gap: 6px;">
-              <i class="fa-solid fa-microchip" style="color: var(--accent-lime);"></i> Hardware Acceleration Engine
+              <i class="fa-solid fa-microchip" style="color: var(--accent);"></i> Hardware Acceleration Engine
             </div>
             <span class="badge badge-active" id="hw-dropdown-detected-badge" style="font-size: 9px;">Probed</span>
           </div>
-          <div style="font-size: 10px; color: var(--text-dim); margin: 6px 0 10px 0;">
+          <div style="font-size: 10px; color: var(--text-muted); margin: 6px 0 10px 0;">
             Click an available hardware encoder to activate it for instant 4K AI rendering:
           </div>
           <div id="hw-options-list" style="display: flex; flex-direction: column; gap: 6px;">
             <!-- Dynamically populated by app.js -->
           </div>
-          <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center; font-size: 9.5px; color: var(--text-dim);">
+          <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center; font-size: 9.5px; color: var(--text-muted);">
             <span id="hw-dropdown-cpu-info"><i class="fa-solid fa-cpu"></i> CPU: Probing...</span>
             <span id="hw-dropdown-gpu-info"><i class="fa-solid fa-display"></i> GPU: Probing...</span>
           </div>
         </div>
       </div>
-      <button class="btn btn-secondary btn-sm" id="btn-load-demo" title="Load sample live stream footage">
+    </div>
+
+    <div class="header-actions">
+      <button class="btn btn-ghost btn-sm" id="btn-load-demo" title="Load sample live stream footage">
         <i class="fa-solid fa-film"></i> Demo
       </button>
-      <button class="btn btn-secondary btn-sm" id="btn-factory-reset" title="Clean slate reset for new user" style="color: var(--accent-rose); border-color: rgba(244, 63, 94, 0.3);">
+      <button class="btn btn-ghost btn-sm" id="btn-factory-reset" title="Clean slate reset for new user">
         <i class="fa-solid fa-rotate-left"></i> Fresh Start
       </button>
       <div style="display: flex; gap: 4px; align-items: center;">
-        <button class="btn btn-lime btn-sm" id="btn-open-folder" title="Open Export Directory">
+        <button class="btn btn-ghost btn-sm" id="btn-open-folder" title="Open Export Directory">
           <i class="fa-solid fa-folder-open"></i> Export Folder
         </button>
-        <button class="btn btn-secondary btn-sm" id="btn-change-export-folder" title="Change Output Location" style="padding: 5px 8px;">
+        <button class="btn btn-ghost btn-sm" id="btn-change-export-folder" title="Change Output Location" style="padding: 5px 8px;">
           <i class="fa-solid fa-pen-to-square"></i>
         </button>
       </div>
@@ -235,8 +236,8 @@
           <!-- Auto vs Manual Mode -->
           <div class="form-group">
             <label>Moment Selection Mode</label>
-            <div class="preset-pills" style="margin-bottom: 6px;">
-              <button class="preset-pill active" id="mode-auto"><i class="fa-solid fa-wand-magic-sparkles"></i> Auto AI (High-Retention Climaxes)</button>
+            <div class="segmented-track" style="margin-bottom: 6px;">
+              <button class="preset-pill active" id="mode-auto"><i class="fa-solid fa-wand-magic-sparkles"></i> Auto AI</button>
               <button class="preset-pill" id="mode-manual"><i class="fa-solid fa-sliders"></i> Manual Number</button>
             </div>
             
@@ -623,21 +624,61 @@
           <!-- Style Preset Selection -->
           <div class="form-group">
             <label>Caption Style Preset</label>
-            <div class="preset-pills">
-              <button class="preset-pill active" data-style="speed">
-                <i class="fa-solid fa-bolt" style="color: var(--accent-lime);"></i> ⚡ Speed Viral (White / Neon Lime)
+            <div class="caption-presets-grid">
+              <!-- 1. Speed -->
+              <button class="style-preset-card preset-pill active" type="button" data-style="speed">
+                <div class="style-preview style-preview-speed">
+                  <span class="preview-word-white">VIRAL</span> <span class="preview-word-highlight">SPEED</span>
+                </div>
+                <span class="style-label"><i class="fa-solid fa-bolt" style="color: #CCFF00;"></i> Speed Viral</span>
               </button>
-              <button class="preset-pill" data-style="hormozi">
-                <i class="fa-solid fa-fire" style="color: #FFDE00;"></i> Hormozi Viral (Gold)
+
+              <!-- 2. Hormozi -->
+              <button class="style-preset-card preset-pill" type="button" data-style="hormozi">
+                <div class="style-preview style-preview-hormozi">
+                  <span class="preview-word-white">HORMOZI</span> <span class="preview-word-gold">GOLD</span>
+                </div>
+                <span class="style-label"><i class="fa-solid fa-fire" style="color: #FFDE00;"></i> Hormozi</span>
               </button>
-              <button class="preset-pill" data-style="mrbeast">
-                <i class="fa-solid fa-crown" style="color: #00FF66;"></i> MrBeast (Yellow/Lime)
+
+              <!-- 3. MrBeast -->
+              <button class="style-preset-card preset-pill" type="button" data-style="mrbeast">
+                <div class="style-preview style-preview-mrbeast">
+                  <span class="preview-word-yellow">MR</span><span class="preview-word-green">BEAST</span>
+                </div>
+                <span class="style-label"><i class="fa-solid fa-crown" style="color: #00FF66;"></i> MrBeast</span>
               </button>
-              <button class="preset-pill" data-style="neon">
-                <i class="fa-solid fa-sun" style="color: #00F2FE;"></i> Neon Cyber Glow
+
+              <!-- 4. Neon Cyber -->
+              <button class="style-preset-card preset-pill" type="button" data-style="neon">
+                <div class="style-preview style-preview-neon">
+                  <span class="preview-word-cyan">NEON</span> <span class="preview-word-magenta">GLOW</span>
+                </div>
+                <span class="style-label"><i class="fa-solid fa-sun" style="color: #00F2FE;"></i> Neon Cyber</span>
               </button>
-              <button class="preset-pill" data-style="clean">
-                <i class="fa-solid fa-font"></i> Minimal Clean
+
+              <!-- 5. Dark Box -->
+              <button class="style-preset-card preset-pill" type="button" data-style="box">
+                <div class="style-preview style-preview-box">
+                  <span class="preview-word-boxed">CLEAN BOX</span>
+                </div>
+                <span class="style-label"><i class="fa-solid fa-square"></i> Dark Box</span>
+              </button>
+
+              <!-- 6. Fire Punch -->
+              <button class="style-preset-card preset-pill" type="button" data-style="fire">
+                <div class="style-preview style-preview-fire">
+                  <span class="preview-word-fire">FIRE PUNCH</span>
+                </div>
+                <span class="style-label"><i class="fa-solid fa-fire-flame-curved" style="color: #FF7A00;"></i> Fire</span>
+              </button>
+
+              <!-- 7. Minimal Clean -->
+              <button class="style-preset-card preset-pill" type="button" data-style="clean">
+                <div class="style-preview style-preview-clean">
+                  Minimal Clean
+                </div>
+                <span class="style-label"><i class="fa-solid fa-font"></i> Minimal Sans</span>
               </button>
             </div>
           </div>
@@ -712,17 +753,17 @@
           </div>
 
           <!-- Words at a time -->
-          <div class="form-group" style="margin-top: 4px;">
+          <div class="form-group" style="margin-top: 6px;">
             <label>Words Shown at a Time</label>
-            <div class="preset-pills">
+            <div class="segmented-track">
               <button class="preset-pill" type="button" data-words="1">1 Word</button>
               <button class="preset-pill" type="button" data-words="2">2 Words</button>
-              <button class="preset-pill active" type="button" data-words="3">3 Words (Reference)</button>
+              <button class="preset-pill active" type="button" data-words="3">3 Words</button>
               <button class="preset-pill" type="button" data-words="4">4 Words</button>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
-              <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 11px; color: #FFFFFF; font-weight: 600;">
-                <input type="checkbox" id="check-uppercase" checked style="accent-color: var(--accent-lime);">
+            <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-primary); font-weight: 500;">
+                <input type="checkbox" id="check-uppercase" checked>
                 ALL CAPS (Uppercase Text)
               </label>
             </div>
@@ -910,7 +951,24 @@
           <img id="preview-img" alt="Preview frame" style="display: block;">
           <video id="preview-source-video" playsinline muted style="position: absolute; opacity: 0.001; pointer-events: none; width: 1px; height: 1px; z-index: -10;"></video>
           <div id="preview-loading" style="position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(7, 9, 14, 0.7); z-index: 15;">
-            <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 28px; color: var(--accent-lime);"></i>
+            <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 28px; color: var(--accent);"></i>
+          </div>
+
+          <!-- Cross-Platform Shorts / Reels / TikTok Safe-Zone Overlay -->
+          <div id="preview-safezone-overlay" class="safezone-overlay" style="display: none;">
+            <div class="safezone-deadzone safezone-top">
+              <span>HEADER / SEARCH UI (12%)</span>
+            </div>
+            <div class="safezone-deadzone safezone-bottom">
+              <span>CAPTION &amp; AUDIO (22%)</span>
+            </div>
+            <div class="safezone-deadzone safezone-right">
+              <span>ACTIONS (13%)</span>
+            </div>
+            <div class="safezone-deadzone safezone-left"></div>
+            <div class="safezone-center-guide">
+              <span class="safezone-pill"><i class="fa-solid fa-shield-halved"></i> SAFE AREA</span>
+            </div>
           </div>
 
           <!-- Interactive Drag Reticle with Corner Resize Handles -->
@@ -960,6 +1018,9 @@
             </button>
             <button class="btn btn-secondary btn-sm" id="btn-refresh-preview" title="Refresh Live Preview Frame">
               <i class="fa-solid fa-arrows-rotate"></i>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-toggle-safezone" title="Toggle Shorts/Reels/TikTok UI Safe Zones">
+              <i class="fa-solid fa-border-none"></i> Safe Zones
             </button>
           </div>
           <div class="timecode-display">

@@ -117,6 +117,8 @@ document.addEventListener("DOMContentLoaded", () => {
   safeInit(initPlayablePreview, "initPlayablePreview");
   safeInit(initViralProfileControls, "initViralProfileControls");
   safeInit(initLLMStatus, "initLLMStatus");
+  safeInit(initSafeZoneOverlay, "initSafeZoneOverlay");
+  safeInit(initRangeSliderProgress, "initRangeSliderProgress");
   
   safeInit(loadMasterTemplate, "loadMasterTemplate");
   safeInit(fetchOutputs, "fetchOutputs");
@@ -156,7 +158,9 @@ function initSliders() {
     const label = document.getElementById(valId);
     if (!slider || !label) return;
     
+    updateSliderProgress(slider);
     slider.addEventListener("input", (e) => {
+      updateSliderProgress(slider);
       const val = parseFloat(e.target.value);
       if (isPercent) {
         label.innerText = `${Math.round(val * 100)}%`;
@@ -497,9 +501,42 @@ function initSliders() {
 
   // Sample text preview input
   const previewTextInput = document.getElementById("input-preview-text");
-  previewTextInput.addEventListener("input", (e) => {
-    state.subtitlesConfig.preview_text = e.target.value || "UNREAL CLUTCH AIM";
-    requestPreviewUpdate();
+  if (previewTextInput) {
+    previewTextInput.addEventListener("input", (e) => {
+      state.subtitlesConfig.preview_text = e.target.value || "UNREAL CLUTCH AIM";
+      requestPreviewUpdate();
+    });
+  }
+}
+
+// Custom Range Slider Dynamic Accent Fill
+function updateSliderProgress(slider) {
+  if (!slider) return;
+  const min = parseFloat(slider.min) || 0;
+  const max = parseFloat(slider.max) || 100;
+  const val = parseFloat(slider.value) || 0;
+  const pct = max > min ? Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100)) : 0;
+  slider.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pct}%, #27272A ${pct}%, #27272A 100%)`;
+}
+
+function initRangeSliderProgress() {
+  const sliders = document.querySelectorAll('input[type="range"]');
+  sliders.forEach(slider => {
+    updateSliderProgress(slider);
+    slider.addEventListener("input", () => updateSliderProgress(slider));
+    slider.addEventListener("change", () => updateSliderProgress(slider));
+  });
+}
+
+// 1-Click Shorts / Reels / TikTok Safe-Zone Overlay
+function initSafeZoneOverlay() {
+  const btnSafezone = document.getElementById("btn-toggle-safezone");
+  const overlay = document.getElementById("preview-safezone-overlay");
+  if (!btnSafezone || !overlay) return;
+  btnSafezone.addEventListener("click", () => {
+    const isVisible = overlay.style.display !== "none";
+    overlay.style.display = isVisible ? "none" : "block";
+    btnSafezone.classList.toggle("active", !isVisible);
   });
 }
 
