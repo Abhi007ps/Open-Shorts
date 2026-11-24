@@ -703,7 +703,7 @@ def render_clip(
             if active_encoder == "h264_vaapi":
                 # Omit -vaapi_device and strip VA-API hwupload stage for CPU encoding
                 fb_base = [arg for arg in fb_base if arg not in ("-vaapi_device", "/dev/dri/renderD128")]
-                fb_fg = re.sub(r';\s*\[pre_vaapi\]format=nv12,hwupload\[out_v\]', '', fb_fg)
+                fb_fg = re.sub(r';?\s*\[pre_vaapi\]format=nv12,hwupload\[out_v\]', '', fb_fg)
                 fb_fg = fb_fg.replace("[pre_vaapi]", "[out_v]")
 
             fallback_cmd = list(fb_base)
