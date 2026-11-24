@@ -84,81 +84,62 @@ def align_words_wav2vec2(
         num_frames = emission.shape[0]
         time_per_frame = dur / max(1, num_frames)
 
-        # Build clean character transcript separated by "|"
-        cleaned_words = []
+        # Build clean character transcript separated by "|" while preserving indices of mapped words
         token_indices = []
-        word_spans = []
-        curr_tok_idx = 0
+        mapped_word_indices = []
+        sep_id = _DICTIONARY.get("|", 0)
 
-        for w_item in words:
+        for w_idx, w_item in enumerate(words):
             w_text = re.sub(r'[^a-zA-Z0-9\']', '', str(w_item.get("word", "")).upper()).strip()
             if not w_text:
                 continue
-            char_toks = []
-            for ch in w_text:
-                if ch in _DICTIONARY:
-                    char_toks.append(_DICTIONARY[ch])
+            char_toks = [_DICTIONARY[ch] for ch in w_text if ch in _DICTIONARY]
             if not char_toks:
                 continue
 
             if token_indices:
-                token_indices.append(_DICTIONARY.get("|", 0))
-                curr_tok_idx += 1
+                token_indices.append(sep_id)
 
-            w_start_idx = curr_tok_idx
             token_indices.extend(char_toks)
-            curr_tok_idx += len(char_toks)
-            w_end_idx = curr_tok_idx
-
-            cleaned_words.append(w_item)
-            word_spans.append((w_start_idx, w_end_idx))
+            mapped_word_indices.append(w_idx)
 
         if not token_indices:
             return words
 
         targets = torch.tensor([token_indices], dtype=torch.int32)
 
-        # Use torchaudio.functional.forced_align if available
-        aligned_spans = None
-        if hasattr(torchaudio.functional, "forced_align"):
+        # Use torchaudio.functional.forced_align + merge_tokens if available
+        if hasattr(torchaudio.functional, "forced_align") and hasattr(torchaudio.functional, "merge_tokens"):
             try:
-                align_out = torchaudio.functional.forced_align(
+                aligned_tokens, scores = torchaudio.functional.forced_align(
                     emissions,
                     targets,
                     blank=0
                 )
-                aligned_tokens = align_out[0][0].tolist()
-                
-                # Group frames per token index
-                token_frames = {}
-                for f_idx, t_idx in enumerate(aligned_tokens):
-                    if t_idx < 0:
-                        continue
-                    if t_idx not in token_frames:
-                        token_frames[t_idx] = []
-                    token_frames[t_idx].append(f_idx)
+                token_spans = torchaudio.functional.merge_tokens(aligned_tokens[0], scores[0])
 
-                aligned_words = []
-                for w_idx, w_item in enumerate(cleaned_words):
-                    s_tok, e_tok = word_spans[w_idx]
-                    w_frames = []
-                    for t in range(s_tok, e_tok):
-                        if t in token_frames:
-                            w_frames.extend(token_frames[t])
-
-                    if w_frames:
-                        new_s = round(min(w_frames) * time_per_frame, 3)
-                        new_e = round((max(w_frames) + 1) * time_per_frame, 3)
-                        aligned_words.append({
-                            "word": w_item["word"],
-                            "start": max(0.0, new_s),
-                            "end": max(new_s + 0.05, new_e)
-                        })
+                word_groups = []
+                current_group = []
+                for span in token_spans:
+                    if span.token == sep_id:
+                        if current_group:
+                            word_groups.append(current_group)
+                            current_group = []
                     else:
-                        aligned_words.append(dict(w_item))
-                return aligned_words
-            except Exception:
-                pass
+                        current_group.append(span)
+                if current_group:
+                    word_groups.append(current_group)
+
+                if len(word_groups) == len(mapped_word_indices):
+                    aligned_words = [dict(w) for w in words]
+                    for grp, orig_idx in zip(word_groups, mapped_word_indices):
+                        new_s = round(grp[0].start * time_per_frame, 3)
+                        new_e = round(grp[-1].end * time_per_frame, 3)
+                        aligned_words[orig_idx]["start"] = max(0.0, new_s)
+                        aligned_words[orig_idx]["end"] = max(aligned_words[orig_idx]["start"] + 0.05, new_e)
+                    return aligned_words
+            except Exception as inner_e:
+                print(f"[WARN] Wav2Vec2 token alignment skipped: {inner_e}")
 
         return words
     except Exception as e:

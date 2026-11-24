@@ -1379,6 +1379,12 @@ def detect_viral_moments(
             clip_item["ai_curated"] = True
         if c.get("llm_punchline"):
             clip_item["llm_punchline"] = c["llm_punchline"]
+        if c.get("description"):
+            clip_item["description"] = c["description"]
+        if c.get("hashtags"):
+            clip_item["hashtags"] = c["hashtags"]
+        if c.get("pinned_comment"):
+            clip_item["pinned_comment"] = c["pinned_comment"]
 
         formatted.append(clip_item)
 

@@ -22,6 +22,7 @@
   --accent: #8B5CF6;          /* Sleek Iris Violet brand accent */
   --accent-hover: #7C3AED;
   --accent-soft: rgba(139, 92, 246, 0.15);
+  --accent-neon: #22FF66;     /* Neon green accent for Post Kit & badges */
   
   --status-ok: #10B981;       /* Active hardware / online indicator */
 

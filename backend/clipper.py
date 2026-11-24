@@ -371,8 +371,8 @@ def upscale_facecam_with_realesrgan(
 
     w_x = int(webcam_crop.get("x", 0))
     w_y = int(webcam_crop.get("y", 0))
-    w_w = int(webcam_crop.get("width", 320))
-    w_h = int(webcam_crop.get("height", 240))
+    w_w = int(webcam_crop.get("w") or webcam_crop.get("width") or 320)
+    w_h = int(webcam_crop.get("h") or webcam_crop.get("height") or 240)
     if w_w <= 0 or w_h <= 0:
         return None
 
@@ -650,6 +650,7 @@ def render_clip(
 
     # Auto-Jump-Cut: detect dead-air gaps > 1.0s, keep 0.15s breath padding, cut dead air with FFmpeg and remap subtitles
     has_audio = bool(vmeta.get("audio_streams")) if "audio_streams" in vmeta else True
+    jc_out = None
     if template_config.get("auto_jump_cut", False) and clip_subtitles:
         speech_intervals = sorted(
             [(s["start"], s["end"]) for s in clip_subtitles if s["end"] > s["start"]],
@@ -1060,22 +1061,13 @@ def render_clip(
             render_success = True
         else:
             raise e
-    
-    if clip_ass_path and os.path.exists(clip_ass_path):
-        try:
-            os.remove(clip_ass_path)
-        except Exception:
-            pass
-    if hook_png and os.path.exists(hook_png):
-        try:
-            os.remove(hook_png)
-        except Exception:
-            pass
-    if cam_esrgan_path and os.path.exists(cam_esrgan_path):
-        try:
-            os.remove(cam_esrgan_path)
-        except Exception:
-            pass
+    finally:
+        for tmp_f in (clip_ass_path, hook_png, cam_esrgan_path, jc_out):
+            if tmp_f and os.path.exists(tmp_f):
+                try:
+                    os.remove(tmp_f)
+                except Exception:
+                    pass
 
     # 5. Extract thumbnail
     thumb_cmd = [

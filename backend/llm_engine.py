@@ -4,7 +4,7 @@ import re
 import urllib.request
 import urllib.error
 import threading
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Callable
 from backend.transcriber import JobCancelledError
 
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"

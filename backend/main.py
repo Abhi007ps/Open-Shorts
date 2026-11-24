@@ -1006,6 +1006,9 @@ def _do_scan_stream_audio(req: ProbeStreamReq, cancel_event: Optional[threading.
             if cancel_event and cancel_event.is_set():
                 raise JobCancelledError("Scan stream audio cancelled by user")
 
+            def t_audio_prog(msg, pct):
+                set_p("processing", pct, msg)
+
             set_p("processing", 88, "Running 2-Round Qwen3 Story Tournament on audio peaks...")
             curated_audio, c_reason = curate_tournament_top_clips(
                 windows=audio_windows,
@@ -1013,7 +1016,7 @@ def _do_scan_stream_audio(req: ProbeStreamReq, cancel_event: Optional[threading.
                 target_count=8,
                 min_duration=15.0,
                 max_duration=50.0,
-                progress_callback=cb_audio,
+                progress_callback=t_audio_prog,
                 cancel_event=cancel_event
             )
             if curated_audio:

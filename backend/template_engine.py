@@ -543,14 +543,15 @@ def build_composite_filtergraph(
         gameplay_crop_filter = ""
 
     # Climax Zoom Punch: smooth 1.0x -> 1.07x -> 1.0x pulse over 1.6s centered at climax_rel_time
-    climax_crop_pulse = ""
+    # Built as a post-scale pulse chain using scale with eval=frame followed by fixed-size center crop
+    climax_pulse_chain = ""
     if climax_zoom_enabled and climax_rel_time is not None and climax_rel_time >= 0:
         t0 = max(0.0, float(climax_rel_time) - 0.8)
         t1 = t0 + 1.6
-        climax_crop_pulse = (
-            f"crop='iw/(if(between(t,{t0:.2f},{t1:.2f}),1+0.07*sin(PI*(t-{t0:.2f})/1.6),1))':"
-            f"'ih/(if(between(t,{t0:.2f},{t1:.2f}),1+0.07*sin(PI*(t-{t0:.2f})/1.6),1))':"
-            f"(iw-ow)/2:(ih-oh)/2,"
+        climax_pulse_chain = (
+            f"scale=w='trunc({gameplay_w}*(1+if(between(t,{t0:.2f},{t1:.2f}),0.07*sin(PI*(t-{t0:.2f})/1.6),0))/2)*2':"
+            f"h='trunc({gameplay_h}*(1+if(between(t,{t0:.2f},{t1:.2f}),0.07*sin(PI*(t-{t0:.2f})/1.6),0))/2)*2':"
+            f"eval=frame:flags=bilinear,crop={gameplay_w}:{gameplay_h}:(iw-ow)/2:(ih-oh)/2,"
         )
 
     if not webcam_crop:
@@ -737,13 +738,13 @@ def build_composite_filtergraph(
 
     if is_split_screen:
         if external_cam_input_idx is not None:
-            cam_chain = f"[{external_cam_input_idx}:v]scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
+            cam_chain = f"[{external_cam_input_idx}:v]setpts=PTS-STARTPTS,scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
         else:
             cam_chain = f"[0:v]setpts=PTS-STARTPTS,{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
 
         filter_chains = [
             bg_filter,
-            f"[0:v]setpts=PTS-STARTPTS,{gameplay_crop_filter}{climax_crop_pulse}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{enhance_gp}format=rgba[gp_raw]",
+            f"[0:v]setpts=PTS-STARTPTS,{gameplay_crop_filter}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{climax_pulse_chain}{enhance_gp}format=rgba[gp_raw]",
             cam_chain,
             f"[bg][cam_raw]overlay={webcam_x}:{webcam_y}:shortest=1:eof_action=repeat[bg_cam]",
             f"[bg_cam][gp_raw]overlay={gameplay_x}:{gameplay_y}:eof_action=repeat[bg_all]",
@@ -765,7 +766,7 @@ def build_composite_filtergraph(
             filter_chains.append(f"{base_overlay_layer}null[pre_sub]")
     else:
         if external_cam_input_idx is not None:
-            cam_chain = f"[{external_cam_input_idx}:v]scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
+            cam_chain = f"[{external_cam_input_idx}:v]setpts=PTS-STARTPTS,scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
         else:
             cam_chain = f"[0:v]setpts=PTS-STARTPTS,{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
 
@@ -773,8 +774,8 @@ def build_composite_filtergraph(
             # 1. Background layer: Fill 9:16 vertical canvas
             bg_filter,
             
-            # 2. Gameplay card: crop -> native pre-deblock -> scale with lanczos -> Topaz enhancement -> mask -> card -> border
-            f"[0:v]setpts=PTS-STARTPTS,{gameplay_crop_filter}{climax_crop_pulse}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{enhance_gp}format=rgba[gp_raw]",
+            # 2. Gameplay card: crop -> native pre-deblock -> scale with lanczos -> climax pulse -> Topaz enhancement -> mask -> card -> border
+            f"[0:v]setpts=PTS-STARTPTS,{gameplay_crop_filter}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{climax_pulse_chain}{enhance_gp}format=rgba[gp_raw]",
             f"[1:v]scale={gameplay_w}:{gameplay_h}[gp_mask]",
             f"[gp_raw][gp_mask]alphamerge[gp_masked]",
             f"[bg][gp_masked]overlay={gameplay_x}:{gameplay_y}:shortest=1:eof_action=repeat[bg_gp]",

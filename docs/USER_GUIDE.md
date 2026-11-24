@@ -25,9 +25,9 @@ OpenShorts Studio Pro features an obsidian dark-mode interface with a 2-pane Non
 1. **Local Video**: Drop any `.mp4`, `.mkv`, `.mov`, `.webm`, `.ts`, `.avi`, or `.m4v` into the studio.
 2. **YouTube / Livestreams**: Paste any public video or livestream URL. OpenShorts uses `yt-dlp` to probe streams without downloading multi-gigabyte files up-front.
 
-### AI Story-First Curation:
-- **Heatmap & Chat Excitement**: Scans YouTube "Most Replayed" heatmaps and acoustic/pitch excitement peaks to pinpoint candidate moments.
-- **Micro-Story Structuring**: Leverages `qwen3:8b` via Ollama to curate complete narrative arcs:
+### AI Story-First Curation (2-Round Tournament):
+- **Heatmap & Chat Excitement**: Scans YouTube "Most Replayed" heatmaps and acoustic/pitch excitement peaks across multi-hour streams to pinpoint candidate moments.
+- **2-Round `qwen3:8b` Story Tournament**: Evaluates windows across two tournament rounds via Ollama to rank top moments, build Ready-to-Post Kits (descriptions, hashtags, pinned comments), and structure complete narrative arcs:
   - **Hook** (0–3s): An arresting opening statement or action.
   - **Buildup**: Contextual dialogue and rising tension.
   - **Payoff / Punchline**: Climax, punchline, or epic gameplay climax.
@@ -53,24 +53,27 @@ OpenShorts Studio Pro features an obsidian dark-mode interface with a 2-pane Non
 
 ---
 
-## 3. Zero-Blink DTW Subtitles & Animations
+## 3. Zero-Blink DTW Subtitles, Broadcast Audio & Animations
 
 ![Words Shown at a Time & Whisper Model Selector](images/subtitles_words_and_preset_verified.png)
 
 ![Burnt Karaoke Subtitles Verification Frame](images/subtitles_mrbeast_verified.jpg)
 
-### Millisecond Dynamic Time Warping (DTW):
-- Whisper acoustic neural alignment produces millisecond word start and end timestamps.
-- Multi-word karaoke phrases maintain strict monotonic intervals (`end >= start + 0.04s`) with **zero blank gaps between words**, eliminating subtitle blinking.
+### Millisecond Dynamic Time Warping (DTW) & Phoneme Alignment:
+- Whisper acoustic neural alignment (`tiny.en`, `base.en`, `small.en`, `large-v3-turbo`) produces millisecond word start and end timestamps, refined via optional Wav2Vec2 forced alignment.
+- Multi-word phrases maintain strict monotonic intervals (`end >= start + 0.04s`) with **zero blank gaps between words**, eliminating subtitle blinking.
 
 ### Viral Caption Presets:
-- **Hormozi**: Crisp White (`#FFFFFF`) with Electric Gold (`#FFDE00`) word highlights and deep drop-shadow.
-- **MrBeast**: Sunburst Yellow (`#FFE600`) with Neon Lime (`#00FF66`) highlight and heavy black border.
-- **Neon Cyber**: Electric Cyan (`#00F5FF`) with Hot Magenta (`#FF007F`) karaoke glow.
-- **Fire Red Alert**, **Box Pill**, **Clean Sky**, and **Minimal Modern**.
+- **SkyGlow**: Upright `Poppins Black` with dual-pass neon glow (`#22FF66`, `#00EEFF`, `#FFE100` palette cycling), continuous 60fps subtle zoom-in, zero-gap phrase bridging, per-character fade sweep, and subtle upward exit glide.
+- **Speed Viral**: Bold `Impact` high-contrast kinetic word highlights tailored for fast-paced highlights.
+- **Dark Box**: Clean, high-contrast translucent dark backing card (`BorderStyle=3`) with vibrant highlight text.
+- **Minimal Sans**: Crisp modern subtitle typography without heavy outlines or boxes.
+
+### Broadcast Audio Mastering (`-14 LUFS`):
+- Automatically applies high-pass filtering, broadcast compression, and `-14 LUFS` EBU R128 loudness normalization (`loudnorm=I=-14:TP=-1.5:LRA=11`) with 192 kbps AAC encoding so clips sound loud and punchy on mobile speakers.
 
 ### "Words Shown at a Time" (Per-Screen Chunking):
-- Choose between `1 Word (Punchy)`, `2 Words`, `3 Words (Viral Sweet-Spot)`, `4 Words`, or `Full Phrase`.
+- Choose between `1 Word (Punchy)`, `2 Words`, `3 Words (Viral Sweet-Spot)`, `4 Words`, `5 Words`, or `Full Phrase`.
 - Use the **Re-Group Active Subtitles** button to instantly re-chunk transcripts without re-running transcription.
 
 ---

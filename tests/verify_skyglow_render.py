@@ -8,16 +8,6 @@ if BASE_DIR not in sys.path:
 
 from backend.subtitle_generator import generate_ass_subtitles, FONTS_DIR, ensure_skyglow_font
 
-import os
-import sys
-import subprocess
-
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
-from backend.subtitle_generator import generate_ass_subtitles, FONTS_DIR, ensure_skyglow_font
-
 def verify_skyglow():
     print("=== Testing SkyGlow Subtitle Generation & Libass Font Rendering ===")
     font_family, f_dir = ensure_skyglow_font()
@@ -165,9 +155,6 @@ def verify_skyglow():
 
     print(f"  [PASS] Rendered 2-second verification clip ({os.path.getsize(out_mp4)} bytes): {out_mp4}")
     print("=== ALL SKYGLOW UPGRADE & MOTION VERIFICATIONS PASSED! ===")
-
-if __name__ == "__main__":
-    verify_skyglow()
 
 if __name__ == "__main__":
     verify_skyglow()

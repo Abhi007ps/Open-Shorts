@@ -13,21 +13,22 @@
 
 ## ⚡ Key Highlights & Core Capabilities
 
-### 🧠 1. Story-First AI Clip Discovery
-- **Acoustic & Heatmap Fusion**: Merges YouTube "Most Replayed" heatmaps with audio energy, pitch variance, and speech density peaks to identify the highest-excitement segments.
-- **Micro-Story Curation with `qwen3:8b`**: Uses a single-pass narrative evaluation to curate complete story arcs:
+### 🧠 1. Story-First AI Clip Discovery & 2-Round Tournament
+- **Acoustic & Heatmap Fusion**: Merges YouTube "Most Replayed" heatmaps with audio energy, pitch variance, and speech density peaks to identify the highest-excitement segments across multi-hour VODs.
+- **2-Round `qwen3:8b` Story Tournament**: Evaluates candidate windows in a 2-round tournament to select the highest-retention moments and generate complete Ready-to-Post Kits (titles, descriptions, hashtags, pinned comments) with complete narrative arcs:
   - **Hook** (0–3s): Arresting statement or high-energy moment.
   - **Buildup**: Contextual dialogue and escalating tension.
   - **Payoff**: Satisfying punchline, climax, or gameplay conclusion.
 - **Sentence-Locked Snapping**: Whisper speech alignment ensures cut boundaries snap cleanly to natural sentence pauses—never clipping dialogue mid-word.
 - **Game-Agnostic Viral Titles**: Generates engaging, context-aware titles without clickbait distortion.
 
-### 🎨 2. Zero-Blink DTW Karaoke Subtitles
-- **Millisecond DTW Alignment**: Direct acoustic word-level timestamps via `whisper.cpp` (`base.en` / `tiny.en`).
+### 🎨 2. Zero-Blink DTW Karaoke Subtitles & Broadcast Audio Mastering
+- **Millisecond DTW & Phoneme Alignment**: Direct acoustic word-level timestamps via `whisper.cpp` (`tiny.en`, `base.en`, `small.en`, `large-v3-turbo`) with optional Wav2Vec2 phoneme forced alignment.
 - **Zero-Blink Guarantee**: Strictly monotonic word intervals (`end >= start + 0.04s`) with gapless transitions inside phrases to prevent subtitle flickering.
 - **Jitter-Free Multi-Word Karaoke**: Multi-word lines retain stable font scaling and centered positioning while highlighted words transition smoothly.
-- **Viral Styling Presets**: Ready-to-use presets including **Hormozi**, **MrBeast**, **Neon Cyber Glow**, **Fire Alert**, **Box Pill**, and **Clean Sky**.
-- **Per-Screen Word Chunking**: Adjust display grouping on the fly (`1 Word`, `2 Words`, `3 Words Viral Sweet-Spot`, `4 Words`, or `Full Phrase`).
+- **Viral Styling Presets**: Ready-to-use presets including **SkyGlow** (upright Poppins Black with dual-pass neon glow, 60fps subtle zoom, and per-character fade sweep), **Speed Viral**, **Dark Box**, and **Minimal Sans**.
+- **Broadcast Audio Mastering (`-14 LUFS`)**: Integrated dynamic compression and loudness normalization (`loudnorm=I=-14:TP=-1.5:LRA=11`) with 192 kbps AAC output for Shorts/Reels/TikTok punch.
+- **Per-Screen Word Chunking**: Adjust display grouping on the fly (`1 Word`, `2 Words`, `3 Words Viral Sweet-Spot`, `4 Words`, `5 Words`, or `Full Phrase`).
 
 ![Subtitles and Styling Showcase](docs/images/subtitles_words_and_preset_verified.png)
 
@@ -64,7 +65,7 @@
 When you launch `run.bat`:
 - An isolated Python virtual environment (`.venv`) is created automatically if Python is present.
 - All Python dependencies from `requirements.txt` are verified and installed (including `fastapi`, `uvicorn`, `yt-dlp`, `pillow`, `aiofiles`, `pydantic`).
-- Whisper GGML models (e.g. `ggml-base.en.bin`, `ggml-tiny.en.bin`) are downloaded on-demand when transcribing.
+- Whisper GGML models (e.g. `ggml-tiny.en.bin`, `ggml-base.en.bin`, `ggml-small.en.bin`, `ggml-large-v3-turbo.bin`) are downloaded on-demand when transcribing.
 
 ### System Requirements & External Binaries:
 For the complete feature set, ensure the following are available on your system `PATH` or placed in `bin/`:
