@@ -53,6 +53,7 @@ const state = {
   autoApplyMaster: true,
   hookConfig: null,
   subtitlesConfig: {
+    enabled: true,
     font_family: "Impact",
     font_size: 62,
     position_x: 50,
@@ -627,6 +628,24 @@ function initPresets() {
     checkUpper.addEventListener("change", (e) => {
       state.subtitlesConfig.is_uppercase = e.target.checked;
       requestPreviewUpdate();
+    });
+  }
+
+  // Global Subtitles Enable/Disable toggle
+  const toggleSubEnabled = document.getElementById("toggle-subtitles-enabled");
+  if (toggleSubEnabled) {
+    toggleSubEnabled.addEventListener("change", (e) => {
+      const enabled = e.target.checked;
+      state.subtitlesConfig.enabled = enabled;
+      updateActiveClipSettings();
+      syncUIFromState();
+      renderClips();
+      if (typeof isPlayMode !== "undefined" && (isPlayMode || isPlayingPreview)) {
+        renderCanvasFrame(getActiveOrFallbackClip());
+      } else {
+        requestPreviewUpdate();
+      }
+      showToast(enabled ? "✅ Subtitles turned ON" : "❌ Subtitles turned OFF (Clean Video)");
     });
   }
 
@@ -1712,6 +1731,37 @@ function syncUIFromState() {
     fontSel.value = state.subtitlesConfig.font_family;
   }
 
+  // Subtitles Enabled Toggle & Banner Sync
+  const isSubEnabled = state.subtitlesConfig.enabled !== false;
+  const toggleSub = document.getElementById("toggle-subtitles-enabled");
+  if (toggleSub) toggleSub.checked = isSubEnabled;
+  const badgeSub = document.getElementById("badge-subtitles-status");
+  if (badgeSub) {
+    if (isSubEnabled) {
+      badgeSub.innerText = "SUBTITLES: ON";
+      badgeSub.className = "badge badge-active";
+      badgeSub.style.background = "";
+      badgeSub.style.color = "";
+      badgeSub.style.borderColor = "";
+    } else {
+      badgeSub.innerText = "SUBTITLES: OFF";
+      badgeSub.className = "badge";
+      badgeSub.style.background = "rgba(239, 68, 68, 0.15)";
+      badgeSub.style.color = "#EF4444";
+      badgeSub.style.borderColor = "rgba(239, 68, 68, 0.4)";
+    }
+  }
+  const bannerSubDisabled = document.getElementById("subtitles-disabled-banner");
+  if (bannerSubDisabled) {
+    bannerSubDisabled.style.display = isSubEnabled ? "none" : "flex";
+  }
+  const subControlsBody = document.getElementById("subtitles-controls-body");
+  if (subControlsBody) {
+    subControlsBody.style.opacity = isSubEnabled ? "1" : "0.45";
+    subControlsBody.style.pointerEvents = isSubEnabled ? "auto" : "none";
+    subControlsBody.style.transition = "opacity 0.2s ease";
+  }
+
   const checkUpper = document.getElementById("check-uppercase");
   if (checkUpper && state.subtitlesConfig.is_uppercase !== undefined) {
     checkUpper.checked = state.subtitlesConfig.is_uppercase;
@@ -2002,11 +2052,21 @@ function renderClips() {
       ? `<span style="color: var(--accent-green); font-size: 11px; margin-left: 4px; font-weight: 600;"><i class="fa-solid fa-check-double"></i> Synced</span>`
       : "";
 
+    const isClipSubsEnabled = (c.subtitle_config && c.subtitle_config.enabled !== undefined)
+      ? c.subtitle_config.enabled
+      : (state.subtitlesConfig.enabled !== false);
+
+    const subsToggleBadge = isClipSubsEnabled
+      ? `<button type="button" class="clip-cc-badge cc-on" onclick="window.toggleClipSubtitles('${c.id}', event)" title="Subtitles ON (Click to turn off for this clip)" style="background: rgba(16, 185, 129, 0.2); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.45); cursor: pointer; border-radius: 4px; padding: 2px 7px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-closed-captioning"></i> CC ON</button>`
+      : `<button type="button" class="clip-cc-badge cc-off" onclick="window.toggleClipSubtitles('${c.id}', event)" title="Subtitles OFF (Clean video with zero burned captions - Click to turn on)" style="background: rgba(239, 68, 68, 0.18); color: #FCA5A5; border: 1px dashed rgba(239, 68, 68, 0.5); cursor: pointer; border-radius: 4px; padding: 2px 7px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-eye-slash"></i> CC OFF</button>`;
+
     const clipSubsCount = (c.subtitles && c.subtitles.length) || 
       (state.subtitles ? state.subtitles.filter(s => s.end > c.start && s.start < c.end).length : 0);
-    const subBadge = clipSubsCount > 0 
-      ? `<span style="background: rgba(16, 185, 129, 0.18); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;"><i class="fa-solid fa-closed-captioning"></i> ${clipSubsCount} Lines</span>`
-      : `<span style="background: rgba(255, 255, 255, 0.08); color: var(--text-muted); font-size: 10px; padding: 2px 7px; border-radius: 4px;"><i class="fa-solid fa-closed-captioning"></i> No Subs</span>`;
+    const subBadge = isClipSubsEnabled
+      ? (clipSubsCount > 0 
+          ? `<span style="background: rgba(16, 185, 129, 0.18); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;"><i class="fa-solid fa-closed-captioning"></i> ${clipSubsCount} Lines</span>`
+          : `<span style="background: rgba(255, 255, 255, 0.08); color: var(--text-muted); font-size: 10px; padding: 2px 7px; border-radius: 4px;"><i class="fa-solid fa-closed-captioning"></i> No Subs</span>`)
+      : `<span style="background: rgba(239, 68, 68, 0.12); color: #FCA5A5; border: 1px solid rgba(239, 68, 68, 0.3); font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;"><i class="fa-solid fa-ban"></i> Subs Muted</span>`;
 
     const llmMindBadge = (c.llm_verified || c.ai_curated)
       ? `<span style="background: rgba(16, 185, 129, 0.2); color: #34D399; border: 1px solid rgba(52, 211, 153, 0.4); font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;"><i class="fa-solid fa-brain"></i> LLM Mind Selected</span>`
@@ -2049,6 +2109,7 @@ function renderClips() {
             ${speechSnapBadge}
             ${narrativeArcBadge}
             ${subBadge}
+            ${subsToggleBadge}
             ${activeBadge}
             ${syncedBadge}
           </div>
@@ -2065,6 +2126,7 @@ function renderClips() {
       </div>
       <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px;">
         <button class="btn btn-secondary btn-sm" onclick="selectClipForPreview('${c.id}', ${c.start})" title="Preview in 9:16 Canvas"><i class="fa-solid fa-eye"></i> Preview</button>
+        <button class="btn btn-secondary btn-sm" onclick="window.toggleClipSubtitles('${c.id}', event)" title="${isClipSubsEnabled ? 'Turn OFF subtitles for this clip (Clean Video)' : 'Turn ON subtitles for this clip'}"><i class="fa-solid ${isClipSubsEnabled ? 'fa-closed-captioning' : 'fa-eye-slash'}" style="${isClipSubsEnabled ? 'color: var(--accent-lime);' : 'color: #EF4444;'}"></i> ${isClipSubsEnabled ? 'Subs ON' : 'Subs OFF'}</button>
         <button class="btn btn-secondary btn-sm" onclick="window.expandClipToFull('${c.id}')" title="Set this clip to 100% full duration of loaded video"><i class="fa-solid fa-expand" style="color:var(--accent-lime);"></i> Full Length</button>
         ${c.thumbnail_url ? `<button class="btn btn-secondary btn-sm" onclick="window.open('${c.thumbnail_url}', '_blank')" title="View High-CTR Cover Thumbnail"><i class="fa-solid fa-image"></i> Cover</button>` : ''}
         <button class="btn btn-primary btn-sm" onclick="applyMasterTemplateToAllClips('${c.id}')" title="Apply this clip's settings to all clips"><i class="fa-solid fa-copy"></i> Apply to All</button>
@@ -2074,6 +2136,34 @@ function renderClips() {
     container.appendChild(item);
   });
 }
+
+window.toggleClipSubtitles = function(id, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  const clip = state.clips.find(c => c.id === id);
+  if (!clip) return;
+  if (!clip.subtitle_config) {
+    clip.subtitle_config = JSON.parse(JSON.stringify(state.subtitlesConfig));
+  }
+  const current = (clip.subtitle_config.enabled !== undefined) ? clip.subtitle_config.enabled : (state.subtitlesConfig.enabled !== false);
+  clip.subtitle_config.enabled = !current;
+  clip.has_custom_settings = true;
+
+  if (state.selectedClipId === id) {
+    state.subtitlesConfig.enabled = clip.subtitle_config.enabled;
+    syncUIFromState();
+  }
+
+  renderClips();
+  if (typeof isPlayMode !== "undefined" && (isPlayMode || isPlayingPreview)) {
+    renderCanvasFrame(getActiveOrFallbackClip());
+  } else {
+    requestPreviewUpdate();
+  }
+  showToast(clip.subtitle_config.enabled ? `✅ Subtitles ON for "${clip.title}"` : `❌ Subtitles OFF for "${clip.title}" (Clean Video)`);
+};
 
 window.expandClipToFull = function(id) {
   const dur = (state.videoMeta && state.videoMeta.duration) ? state.videoMeta.duration : 60;
@@ -5382,6 +5472,12 @@ function renderCanvasFrame(clip, customTime = null) {
 }
 
 function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
+  // If subtitles are turned off globally or for this clip, do not render captions
+  const subEnabled = (clip && clip.subtitle_config && clip.subtitle_config.enabled !== undefined)
+    ? clip.subtitle_config.enabled
+    : (state.subtitlesConfig.enabled !== false);
+  if (!subEnabled) return;
+
   const subs = (clip && clip.subtitles && clip.subtitles.length > 0)
     ? clip.subtitles
     : (state.subtitles || []);

@@ -597,11 +597,29 @@
       <!-- TAB 3: Subtitles -->
       <div class="tab-content" id="tab-subtitles">
         <div class="card">
-          <div class="card-title">
-            <span><i class="fa-solid fa-closed-captioning" style="color: var(--accent-lime);"></i> Smooth Captions (Reference Style)</span>
-            <span class="badge badge-active">NO BOUNCE • SMOOTH HIGHLIGHT</span>
+          <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <i class="fa-solid fa-closed-captioning" style="color: var(--accent-lime); font-size: 15px;"></i>
+              <span style="font-weight: 700;">Subtitles & Captions</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span id="badge-subtitles-status" class="badge badge-active" style="font-weight: 700; letter-spacing: 0.5px; font-size: 10.5px;">SUBTITLES: ON</span>
+              <label class="ui-toggle-wrapper" title="Turn subtitles on or off for clips">
+                <div class="ui-toggle">
+                  <input type="checkbox" id="toggle-subtitles-enabled" checked>
+                  <span class="ui-toggle-slider"></span>
+                </div>
+              </label>
+            </div>
           </div>
 
+          <!-- Disabled Banner -->
+          <div id="subtitles-disabled-banner" style="display: none; background: rgba(239, 68, 68, 0.08); border: 1px dashed rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; color: #FCA5A5; font-size: 11.5px; align-items: center; gap: 8px;">
+            <i class="fa-solid fa-eye-slash" style="color: #EF4444; font-size: 14px;"></i>
+            <span><strong>Subtitles are turned OFF.</strong> Clean video with zero burned captions will be exported.</span>
+          </div>
+
+          <div id="subtitles-controls-body">
           <!-- Style Preset Selection -->
           <div class="form-group">
             <label>Caption Style Preset</label>
@@ -766,6 +784,7 @@
             <div style="height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
               <div id="transcribe-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-lime), var(--accent-neon)); transition: width 0.2s ease;"></div>
             </div>
+          </div>
           </div>
         </div>
       </div>

@@ -162,71 +162,77 @@ def generate_preview_frame(
             hook_png, hook_y = hook_res
 
     # 3. Build subtitles for preview (using actual transcribed subtitles if available at timestamp)
-    preview_ass = os.path.join(TEMP_DIR, f"preview_{uuid.uuid4().hex[:8]}.ass")
-    active_seg = None
-    if all_subtitles:
-        # Check for segment covering the exact timestamp or closest within 1.5 seconds
-        for s in all_subtitles:
-            s_start = float(s.get("start", 0))
-            s_end = float(s.get("end", 0))
-            if s_start <= timestamp <= s_end:
-                active_seg = s
-                break
-        if not active_seg:
-            near = [s for s in all_subtitles if abs(float(s.get("start", 0)) - timestamp) <= 1.5]
-            if near:
-                active_seg = near[0]
+    subtitles_enabled = subtitle_config.get("enabled", True) if isinstance(subtitle_config, dict) else True
+    if template_config and isinstance(template_config, dict) and template_config.get("subtitles_enabled") is False:
+        subtitles_enabled = False
 
-    sample_text = active_seg.get("text", "") if active_seg else subtitle_config.get("preview_text", "UNREAL CLUTCH AIM")
-    if not sample_text:
-        sample_text = "UNREAL CLUTCH AIM"
-    words_list = sample_text.split()
-    
-    # Format sample with active word highlighted
-    hl_color_ass = hex_to_ass_color(subtitle_config.get("highlight_color", "#FFDE00"))
-    pri_color_ass = hex_to_ass_color(subtitle_config.get("primary_color", "#FFFFFF"))
-    style_p = subtitle_config.get("style_preset", "hormozi")
-    
-    # Determine which word to highlight (based on timestamp if words have timing, else mid word)
-    mid_idx = len(words_list) // 2 if len(words_list) > 1 else 0
-    if active_seg and active_seg.get("words"):
-        for w_i, w_obj in enumerate(active_seg["words"]):
-            if float(w_obj.get("start", 0)) <= timestamp <= float(w_obj.get("end", 0)):
-                mid_idx = w_i
-                break
+    preview_ass = None
+    if subtitles_enabled:
+        preview_ass = os.path.join(TEMP_DIR, f"preview_{uuid.uuid4().hex[:8]}.ass")
+        active_seg = None
+        if all_subtitles:
+            # Check for segment covering the exact timestamp or closest within 1.5 seconds
+            for s in all_subtitles:
+                s_start = float(s.get("start", 0))
+                s_end = float(s.get("end", 0))
+                if s_start <= timestamp <= s_end:
+                    active_seg = s
+                    break
+            if not active_seg:
+                near = [s for s in all_subtitles if abs(float(s.get("start", 0)) - timestamp) <= 1.5]
+                if near:
+                    active_seg = near[0]
 
-    formatted_words = []
-    for idx, w in enumerate(words_list):
-        word_styled = w.upper() if subtitle_config.get('is_uppercase', True) else w
-        if idx == mid_idx and style_p in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
-            formatted_words.append(f"{{\\c{hl_color_ass}}}{word_styled}{{\\c{pri_color_ass}}}")
-        else:
-            formatted_words.append(f"{{\\c{pri_color_ass}}}{word_styled}")
-    
-    preview_line_text = " ".join(formatted_words)
-    
-    # Generate ASS with this single dialogue event for preview
-    generate_ass_subtitles(
-        segments=[{
-            "start": 0.0,
-            "end": 999.0,
-            "text": preview_line_text,
-            "words": []
-        }],
-        output_path=preview_ass,
-        font_family=subtitle_config.get("font_family", "Impact"),
-        font_size=subtitle_config.get("font_size", 56),
-        primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
-        highlight_color=subtitle_config.get("highlight_color", "#FFDE00"),
-        outline_color=subtitle_config.get("outline_color", "#000000"),
-        outline_width=subtitle_config.get("outline_width", 4),
-        shadow_depth=subtitle_config.get("shadow_depth", 2),
-        position_x=subtitle_config.get("position_x", 50.0),
-        position_y=subtitle_config.get("position_y", 50.0),
-        style_preset=style_p,
-        is_uppercase=False,
-        sync_offset_ms=subtitle_config.get("sync_offset_ms", 0)
-    )
+        sample_text = active_seg.get("text", "") if active_seg else subtitle_config.get("preview_text", "UNREAL CLUTCH AIM")
+        if not sample_text:
+            sample_text = "UNREAL CLUTCH AIM"
+        words_list = sample_text.split()
+        
+        # Format sample with active word highlighted
+        hl_color_ass = hex_to_ass_color(subtitle_config.get("highlight_color", "#FFDE00"))
+        pri_color_ass = hex_to_ass_color(subtitle_config.get("primary_color", "#FFFFFF"))
+        style_p = subtitle_config.get("style_preset", "hormozi")
+        
+        # Determine which word to highlight (based on timestamp if words have timing, else mid word)
+        mid_idx = len(words_list) // 2 if len(words_list) > 1 else 0
+        if active_seg and active_seg.get("words"):
+            for w_i, w_obj in enumerate(active_seg["words"]):
+                if float(w_obj.get("start", 0)) <= timestamp <= float(w_obj.get("end", 0)):
+                    mid_idx = w_i
+                    break
+
+        formatted_words = []
+        for idx, w in enumerate(words_list):
+            word_styled = w.upper() if subtitle_config.get('is_uppercase', True) else w
+            if idx == mid_idx and style_p in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
+                formatted_words.append(f"{{\\c{hl_color_ass}}}{word_styled}{{\\c{pri_color_ass}}}")
+            else:
+                formatted_words.append(f"{{\\c{pri_color_ass}}}{word_styled}")
+        
+        preview_line_text = " ".join(formatted_words)
+        
+        # Generate ASS with this single dialogue event for preview
+        generate_ass_subtitles(
+            segments=[{
+                "start": 0.0,
+                "end": 999.0,
+                "text": preview_line_text,
+                "words": []
+            }],
+            output_path=preview_ass,
+            font_family=subtitle_config.get("font_family", "Impact"),
+            font_size=subtitle_config.get("font_size", 56),
+            primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
+            highlight_color=subtitle_config.get("highlight_color", "#FFDE00"),
+            outline_color=subtitle_config.get("outline_color", "#000000"),
+            outline_width=subtitle_config.get("outline_width", 4),
+            shadow_depth=subtitle_config.get("shadow_depth", 2),
+            position_x=subtitle_config.get("position_x", 50.0),
+            position_y=subtitle_config.get("position_y", 50.0),
+            style_preset=style_p,
+            is_uppercase=False,
+            sync_offset_ms=subtitle_config.get("sync_offset_ms", 0)
+        )
     
     # 4. Filtergraph
     vmeta = probe_video(video_path)
@@ -287,7 +293,7 @@ def generate_preview_frame(
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
     
     # Cleanup preview ASS & hook PNG
-    if os.path.exists(preview_ass):
+    if preview_ass and os.path.exists(preview_ass):
         try:
             os.remove(preview_ass)
         except Exception:
@@ -396,10 +402,14 @@ def render_clip(
             hook_png, hook_y = hook_res
 
     # 3. Filter subtitles that fall within this clip and shift timestamps relative to clip start
+    subtitles_enabled = subtitle_config.get("enabled", True) if isinstance(subtitle_config, dict) else True
+    if template_config and isinstance(template_config, dict) and template_config.get("subtitles_enabled") is False:
+        subtitles_enabled = False
+
     clip_ass_path = None
     clip_subtitles = []
     clip_duration = end_time - start_time
-    if all_subtitles:
+    if all_subtitles and subtitles_enabled:
         # Check if the passed subtitles are ALREADY clip-relative (e.g. 0.0s to duration)
         # or stream-absolute (e.g. start_time to end_time)
         is_clip_relative = False
@@ -470,8 +480,8 @@ def render_clip(
                             "words": rel_words
                         })
 
-    # Generate ASS file only if there are dialogue subtitles
-    if clip_subtitles:
+    # Generate ASS file only if subtitles are enabled and there are dialogue subtitles
+    if clip_subtitles and subtitles_enabled:
         clip_ass_path = os.path.join(TEMP_DIR, f"{clip_id}_subs.ass")
         generate_ass_subtitles(
             segments=clip_subtitles,

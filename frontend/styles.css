@@ -1229,3 +1229,83 @@ input[type="color"]::-webkit-color-swatch {
     white-space: nowrap;
   }
 }
+
+/* =====================================================================
+   Subtitles On/Off Toggle & Clip CC Badge
+   ===================================================================== */
+.ui-toggle-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.ui-toggle {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 24px;
+}
+.ui-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.ui-toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: rgba(255, 255, 255, 0.15);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 24px;
+  border: 1px solid var(--border-subtle);
+}
+.ui-toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 2px;
+  bottom: 2px;
+  background-color: #FFFFFF;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 50%;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.4);
+}
+.ui-toggle input:checked + .ui-toggle-slider {
+  background-color: var(--accent-lime);
+  border-color: var(--accent-lime);
+}
+.ui-toggle input:checked + .ui-toggle-slider:before {
+  transform: translateX(18px);
+  background-color: #0F172A;
+}
+
+/* Clip list CC status badge */
+.clip-cc-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.clip-cc-badge.cc-on {
+  background: rgba(204, 255, 0, 0.15);
+  color: var(--accent-lime);
+  border: 1px solid rgba(204, 255, 0, 0.35);
+}
+.clip-cc-badge.cc-off {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim);
+  border: 1px solid var(--border-subtle);
+  opacity: 0.7;
+}
+.clip-cc-badge:hover {
+  transform: scale(1.05);
+}
+
