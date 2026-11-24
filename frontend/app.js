@@ -5868,7 +5868,7 @@ function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
 
   ctx.save();
   if (state.subtitlesConfig.style_preset === "skyglow") {
-    ctx.font = `italic 900 ${fontSize}px "Poppins", "Arial Black", Impact, sans-serif`;
+    ctx.font = `900 ${fontSize}px "Poppins", "Arial Black", Impact, sans-serif`;
   } else {
     ctx.font = `900 ${fontSize}px "${fontFam}", Impact, sans-serif`;
   }

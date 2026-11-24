@@ -1116,7 +1116,7 @@ input[type="checkbox"]:checked::after {
 
 .style-preview-skyglow {
   font-family: "Poppins", "Arial Black", Impact, sans-serif;
-  font-style: italic;
+  font-style: normal;
   font-weight: 900;
   text-transform: uppercase;
 }

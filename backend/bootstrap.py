@@ -72,13 +72,13 @@ def verify_models():
         print(f"  [ERROR] Model verification error: {e}")
 
 def verify_fonts():
-    """Ensure Poppins-BlackItalic.ttf caption font is present; auto-download if missing."""
+    """Ensure Poppins-Black.ttf caption font is present; auto-download if missing."""
     from backend.subtitle_generator import ensure_skyglow_font, FONTS_DIR
     try:
         font_family, f_dir = ensure_skyglow_font()
-        font_path = os.path.join(f_dir, "Poppins-BlackItalic.ttf")
+        font_path = os.path.join(f_dir, "Poppins-Black.ttf")
         if os.path.isfile(font_path):
-            print(f"  [OK] Caption Font:   Poppins-BlackItalic.ttf ready")
+            print(f"  [OK] Caption Font:   Poppins-Black.ttf ready")
         else:
             print(f"  [WARN] Caption Font: Fallback to {font_family}")
     except Exception as e:

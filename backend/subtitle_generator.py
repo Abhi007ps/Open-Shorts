@@ -8,18 +8,18 @@ os.makedirs(FONTS_DIR, exist_ok=True)
 
 def ensure_skyglow_font() -> Tuple[str, str]:
     """
-    Ensures Poppins-BlackItalic.ttf is downloaded locally to assets/fonts/.
+    Ensures upright Poppins-Black.ttf is downloaded locally to assets/fonts/.
     Returns (font_family_name, fonts_dir).
     """
-    target = os.path.join(FONTS_DIR, "Poppins-BlackItalic.ttf")
+    target = os.path.join(FONTS_DIR, "Poppins-Black.ttf")
     if not os.path.exists(target) or os.path.getsize(target) < 20 * 1024:
-        url = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-BlackItalic.ttf"
+        url = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Black.ttf"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 OpenShorts/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp, open(target, "wb") as f:
                 f.write(resp.read())
         except Exception as e:
-            print(f"[WARN] Could not download Poppins-BlackItalic.ttf: {e}")
+            print(f"[WARN] Could not download Poppins-Black.ttf: {e}")
 
     if os.path.exists(target) and os.path.getsize(target) >= 20 * 1024:
         return ("Poppins Black", FONTS_DIR)
@@ -206,15 +206,15 @@ def generate_ass_subtitles(
     ass_back = hex_to_ass_color("#000000", alpha=140 if border_style == 3 else 80)
 
     bold = -1 # True in ASS
-    italic = -1 if style_preset == "skyglow" else 0
+    italic = 0 # Upright
 
     if style_preset == "skyglow":
         styles_section = f"""[V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,1,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1
-Style: SkyOuter,{effective_font},{font_size},&HFFFFFFFF&,&H00000000&,&H00000000&,&H00000000&,0,-1,0,0,100,100,1,0,1,11,0,5,60,60,60,1
-Style: SkyInner,{effective_font},{font_size},&HFFFFFFFF&,&H00000000&,&H00000000&,&H00000000&,0,-1,0,0,100,100,1,0,1,4.5,0,5,60,60,60,1
-Style: SkyFill,{effective_font},{font_size},{ass_primary},&H00000000&,&H00101010&,&H70000000&,0,-1,0,0,100,100,1,0,1,0.8,3,5,60,60,60,1"""
+Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,-0.5,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1
+Style: SkyOuter,{effective_font},{font_size},&HFFFFFFFF&,&H00000000&,&H00000000&,&H00000000&,0,0,0,0,100,100,-0.5,0,1,11,0,5,60,60,60,1
+Style: SkyInner,{effective_font},{font_size},&HFFFFFFFF&,&H00000000&,&H00000000&,&H00000000&,0,0,0,0,100,100,-0.5,0,1,4.5,0,5,60,60,60,1
+Style: SkyFill,{effective_font},{font_size},{ass_primary},&H00000000&,&H00101010&,&H70000000&,0,0,0,0,100,100,-0.5,0,1,0.8,3,5,60,60,60,1"""
     else:
         styles_section = f"""[V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
@@ -250,10 +250,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
                 "words": seg.get("words", [])
             })
     valid_segs.sort(key=lambda s: s["start"])
-    # Clamp end so segments never overlap
-    for k in range(len(valid_segs) - 1):
-        if valid_segs[k]["end"] > valid_segs[k + 1]["start"]:
-            valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.04, valid_segs[k + 1]["start"])
+
+    # Zero-Gap Phrase Bridging for skyglow (or standard non-overlap clamp for others)
+    if style_preset == "skyglow" and not is_preview:
+        for k in range(len(valid_segs)):
+            if k + 1 < len(valid_segs):
+                next_start = valid_segs[k + 1]["start"]
+                gap = next_start - valid_segs[k]["end"]
+                if 0.0 <= gap <= 0.45:
+                    valid_segs[k]["end"] = next_start + 0.06
+                elif gap > 0.45:
+                    valid_segs[k]["end"] = min(valid_segs[k]["end"] + 0.18, next_start - 0.02)
+                elif valid_segs[k]["end"] > next_start + 0.06:
+                    valid_segs[k]["end"] = next_start + 0.06
+            else:
+                valid_segs[k]["end"] += 0.18
+            valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.20, valid_segs[k]["end"])
+    else:
+        for k in range(len(valid_segs) - 1):
+            if valid_segs[k]["end"] > valid_segs[k + 1]["start"]:
+                valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.04, valid_segs[k + 1]["start"])
 
     # SkyGlow 3-color palette cycling across phrases
     DEFAULT_SKYGLOW_PALETTE = ["#22FF66", "#00EEFF", "#FFE100"]
@@ -350,25 +366,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
             else:
                 w_starts = []
 
-            if seg_idx + 1 < len(valid_segs):
-                next_start = valid_segs[seg_idx + 1]["start"]
-                extended_end = min(end_t + 0.18, max(end_t + 0.05, next_start - 0.02))
-            else:
-                extended_end = end_t + 0.18
-            extended_end = max(start_t + 0.05, extended_end)
+            total_ms = max(200, int(round((end_t - start_t) * 1000)))
+            fade_out_ms = min(160, max(80, total_ms // 4))
+            exit_start_ms = max(0, total_ms - fade_out_ms)
 
             start_str = format_ass_timestamp(start_t)
-            ext_end_str = format_ass_timestamp(extended_end)
+            end_str = format_ass_timestamp(end_t)
 
             layer0_words = []
             layer1_words = []
             layer2_words = []
-            fade_ms = 110
 
             for j in range(num_w):
                 w_str = cleaned_words[j]["word"]
                 is_neon = is_neon_flags[j]
-                rel_ms = max(0, int(round((w_starts[j] - start_t) * 1000))) if not is_preview else 0
 
                 if is_preview:
                     if is_neon:
@@ -379,20 +390,48 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
                         l0 = f"{{\\3c&H000000&\\1a&HFF&\\3a&H55&\\4a&HFF&}}{w_str}"
                         l1 = f"{{\\3c&H000000&\\1a&HFF&\\3a&H70&\\4a&HFF&}}{w_str}"
                         l2 = f"{{\\1c{ass_primary}\\3c&H101010&\\1a&H00&\\3a&H90&\\4a&H40&}}{w_str}"
+                    layer0_words.append(l0)
+                    layer1_words.append(l1)
+                    layer2_words.append(l2)
                 else:
-                    t_end = rel_ms + fade_ms
-                    if is_neon:
-                        l0 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H62&)}}{w_str}"
-                        l1 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H42&)}}{w_str}"
-                        l2 = f"{{\\1c{ass_neon}\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\1a&H00&\\3a&H85&\\4a&H50&)}}{w_str}"
+                    rel_start_ms = max(0, int(round((w_starts[j] - start_t) * 1000)))
+                    if j + 1 < num_w:
+                        next_rel_start_ms = max(rel_start_ms + 90, int(round((w_starts[j + 1] - start_t) * 1000)))
                     else:
-                        l0 = f"{{\\3c&H000000&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H55&)}}{w_str}"
-                        l1 = f"{{\\3c&H000000&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H70&)}}{w_str}"
-                        l2 = f"{{\\1c{ass_primary}\\3c&H101010&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\1a&H00&\\3a&H90&\\4a&H40&)}}{w_str}"
+                        next_rel_start_ms = max(rel_start_ms + 90, total_ms - fade_out_ms)
+                    word_span_ms = max(90, next_rel_start_ms - rel_start_ms)
+                    sweep_ms = min(180, int(word_span_ms * 0.60))
 
-                layer0_words.append(l0)
-                layer1_words.append(l1)
-                layer2_words.append(l2)
+                    if len(w_str) <= 10:
+                        chunks = list(w_str)
+                    else:
+                        chunks = [w_str[idx:idx+2] for idx in range(0, len(w_str), 2)]
+                    
+                    num_chunks = len(chunks)
+                    w_l0_chunks = []
+                    w_l1_chunks = []
+                    w_l2_chunks = []
+
+                    for c_idx, ch in enumerate(chunks):
+                        ch_start = rel_start_ms + int((c_idx / max(1, num_chunks)) * sweep_ms)
+                        ch_end = ch_start + 85
+
+                        if is_neon:
+                            c0 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({ch_start},{ch_end},\\3a&H62&)}}{ch}"
+                            c1 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({ch_start},{ch_end},\\3a&H42&)}}{ch}"
+                            c2 = f"{{\\1c{ass_neon}\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({ch_start},{ch_end},\\1a&H00&\\3a&H85&\\4a&H50&)}}{ch}"
+                        else:
+                            c0 = f"{{\\3c&H000000&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({ch_start},{ch_end},\\3a&H55&)}}{ch}"
+                            c1 = f"{{\\3c&H000000&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({ch_start},{ch_end},\\3a&H70&)}}{ch}"
+                            c2 = f"{{\\1c{ass_primary}\\3c&H101010&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({ch_start},{ch_end},\\1a&H00&\\3a&H90&\\4a&H40&)}}{ch}"
+
+                        w_l0_chunks.append(c0)
+                        w_l1_chunks.append(c1)
+                        w_l2_chunks.append(c2)
+
+                    layer0_words.append("".join(w_l0_chunks))
+                    layer1_words.append("".join(w_l1_chunks))
+                    layer2_words.append("".join(w_l2_chunks))
 
             def join_layer_words(w_list):
                 out_str = ""
@@ -407,16 +446,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
             l1_body = join_layer_words(layer1_words)
             l2_body = join_layer_words(layer2_words)
 
-            fad_tag = "\\fad(0,150)" if not is_preview else ""
-            lines.append(
-                f"Dialogue: 0,{start_str},{ext_end_str},SkyOuter,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y}){fad_tag}\\blur16}}{l0_body}"
-            )
-            lines.append(
-                f"Dialogue: 1,{start_str},{ext_end_str},SkyInner,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y}){fad_tag}\\blur5}}{l1_body}"
-            )
-            lines.append(
-                f"Dialogue: 2,{start_str},{ext_end_str},SkyFill,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y}){fad_tag}\\blur0.3}}{l2_body}"
-            )
+            if is_preview:
+                lines.append(
+                    f"Dialogue: 0,{start_str},{end_str},SkyOuter,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})\\blur16}}{l0_body}"
+                )
+                lines.append(
+                    f"Dialogue: 1,{start_str},{end_str},SkyInner,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})\\blur5}}{l1_body}"
+                )
+                lines.append(
+                    f"Dialogue: 2,{start_str},{end_str},SkyFill,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})\\blur0.3}}{l2_body}"
+                )
+            else:
+                anim_base = f"\\an5\\move({pos_x},{pos_y},{pos_x},{pos_y - 12},{exit_start_ms},{total_ms})\\fad(0,{fade_out_ms})\\fscx95\\fscy95\\t(0,{total_ms},0.85,\\fscx105\\fscy105)"
+                lines.append(
+                    f"Dialogue: 0,{start_str},{end_str},SkyOuter,,0,0,0,,{{{anim_base}\\blur16}}{l0_body}"
+                )
+                lines.append(
+                    f"Dialogue: 1,{start_str},{end_str},SkyInner,,0,0,0,,{{{anim_base}\\blur5}}{l1_body}"
+                )
+                lines.append(
+                    f"Dialogue: 2,{start_str},{end_str},SkyFill,,0,0,0,,{{{anim_base}\\blur0.3}}{l2_body}"
+                )
 
         # ==========================================
         # PRESET B: Speed / Clean / Box / Other Styles
