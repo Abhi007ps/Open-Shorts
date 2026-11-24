@@ -72,6 +72,7 @@ def find_binary(bin_name: str, subdirs: Optional[List[str]] = None) -> str:
 FFMPEG_BIN = find_binary("ffmpeg")
 FFPROBE_BIN = find_binary("ffprobe")
 WHISPER_CLI = find_binary("whisper-cli", subdirs=["Release"])
+REALESRGAN_BIN = find_binary("realesrgan-ncnn-vulkan", subdirs=["realesrgan", "Release"])
 
 def get_cpu_info() -> Dict[str, Any]:
     """Detects CPU model, core counts, and recommended thread allocations."""
@@ -648,6 +649,8 @@ def get_hardware_profile() -> Dict[str, Any]:
         "binary_paths": {
             "ffmpeg": FFMPEG_BIN,
             "ffprobe": FFPROBE_BIN,
-            "whisper": WHISPER_CLI
-        }
+            "whisper": WHISPER_CLI,
+            "realesrgan": REALESRGAN_BIN
+        },
+        "has_realesrgan": bool(os.path.isfile(REALESRGAN_BIN))
     }

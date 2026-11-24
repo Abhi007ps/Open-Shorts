@@ -469,7 +469,8 @@ def build_composite_filtergraph(
     input_video_w: int = 1920,
     input_video_h: int = 1080,
     performance_tier: Optional[str] = None,
-    encoder_name: Optional[str] = None
+    encoder_name: Optional[str] = None,
+    external_cam_input_idx: Optional[int] = None
 ) -> str:
     """
     Constructs the complete FFmpeg complex filter string with Topaz-grade upscaling,
@@ -655,12 +656,13 @@ def build_composite_filtergraph(
         # Tier-aware bypass: skip heavy CPU deblocking/denoising on eco and fast tiers
         if performance_tier in ("eco", "fast"):
             deblock_str = ""
-            cam_pre_deblock = ""
+
+        # Pre-scale denoise runs on tiny cropped facecam: virtually free on CPU (~1/20th of 1080p).
+        # Only skip on eco tier (never on fast/balanced).
+        cam_pre_deblock = "" if performance_tier == "eco" else "hqdn3d=1.6:1.4:3.0:2.5,"
 
         micro_str_gp = f"unsharp=lx=3:ly=3:la={la_gp:.2f}:cx=3:cy=3:ca=0.0,"
-        micro_str_cam = f"unsharp=lx=3:ly=3:la={la_cam:.2f}:cx=3:cy=3:ca=0.0,"
         gp_gamma = 1.01
-        cam_gamma = 1.04
         cam_bright = brightness_offset + 0.015
 
         # Skip heavy CPU gradfun debanding filter on eco/fast tiers
@@ -668,28 +670,19 @@ def build_composite_filtergraph(
         gradfun_cam = "" if performance_tier in ("eco", "fast") else "gradfun=radius=16:strength=0.9,"
 
         enhance_gp = f"{micro_str_gp}cas={cas_strength_gp:.2f},eq=contrast={gp_contrast:.2f}:saturation={gp_sat:.2f}:brightness={brightness_offset:.2f}:gamma={gp_gamma:.2f},{gradfun_gp}"
-        enhance_cam = f"{micro_str_cam}cas={cas_strength_cam:.2f},eq=contrast={cam_contrast:.2f}:saturation={cam_sat:.2f}:brightness={cam_bright:.2f}:gamma={cam_gamma:.2f},{gradfun_cam}"
+        # Balanced studio clarity: fine-detail unsharp (0.30), crisp CAS (0.50), punchy studio skin pop
+        enhance_cam = f"unsharp=lx=3:ly=3:la=0.30:cx=3:cy=3:ca=0.0,cas=0.50,eq=contrast=1.07:saturation=1.10:brightness={cam_bright:.2f}:gamma=1.02,{gradfun_cam}"
     else:
         # Standard Fallback
-        deblock_str = "hqdn3d=0.6:0.6:1.2:1.2," if deblock_level in ("medium", "strong") else ""
-        cam_pre_deblock = "hqdn3d=0.5:0.5:1.0:1.0," if deblock_level in ("medium", "strong") else ""
-
-        if performance_tier in ("eco", "fast"):
-            deblock_str = ""
-            cam_pre_deblock = ""
+        deblock_str = "" if performance_tier in ("eco", "fast") else ("hqdn3d=0.6:0.6:1.2:1.2," if deblock_level in ("medium", "strong") else "")
+        cam_pre_deblock = "" if performance_tier == "eco" else "hqdn3d=1.6:1.4:3.0:2.5,"
 
         micro_str_gp = ""
         if micro_texture > 0.05:
             la_gp = min(0.38, max(0.08, micro_texture * 0.48))
             micro_str_gp = f"unsharp=lx=3:ly=3:la={la_gp:.2f}:cx=3:cy=3:ca=0.0,"
 
-        micro_str_cam = ""
-        if micro_texture > 0.05:
-            la_cam = min(0.36, max(0.12, micro_texture * 0.52))
-            micro_str_cam = f"unsharp=lx=3:ly=3:la={la_cam:.2f}:cx=3:cy=3:ca=0.0,"
-
         cas_strength_gp = min(0.42, max(0.18, sharpen_amount * 0.50))
-        cas_strength_cam = min(0.40, max(0.20, sharpen_amount * 0.48))
 
         gp_contrast = max(1.04, min(1.12, contrast_boost))
         gp_sat = max(1.08, min(1.25, saturation_boost))
@@ -698,11 +691,8 @@ def build_composite_filtergraph(
         gradfun_cam = "" if performance_tier in ("eco", "fast") else "gradfun=radius=16:strength=0.9,"
         enhance_gp = f"{micro_str_gp}cas={cas_strength_gp:.2f},eq=contrast={gp_contrast:.2f}:saturation={gp_sat:.2f}:brightness={brightness_offset:.2f}:gamma={gp_gamma:.2f},{gradfun_gp}"
 
-        cam_sat = min(1.08, max(1.01, 1.0 + (saturation_boost - 1.0) * 0.35))
-        cam_contrast = min(1.06, max(1.00, 1.0 + (contrast_boost - 1.0) * 0.50))
-        cam_gamma = 1.04
         cam_bright = brightness_offset + 0.015
-        enhance_cam = f"{micro_str_cam}cas={cas_strength_cam:.2f},eq=contrast={cam_contrast:.2f}:saturation={cam_sat:.2f}:brightness={cam_bright:.2f}:gamma={cam_gamma:.2f},{gradfun_cam}"
+        enhance_cam = f"unsharp=lx=3:ly=3:la=0.30:cx=3:cy=3:ca=0.0,cas=0.50,eq=contrast=1.07:saturation=1.10:brightness={cam_bright:.2f}:gamma=1.02,{gradfun_cam}"
 
     # Background generation: blurred source frame when floating with bg_blur_sigma > 0, else clean solid black
     if not is_split_screen and bg_blur_sigma > 0:
@@ -730,10 +720,15 @@ def build_composite_filtergraph(
         bg_filter = f"color=c=black:s={canvas_w}x{canvas_h}:r={input_fps}[bg]"
 
     if is_split_screen:
+        if external_cam_input_idx is not None:
+            cam_chain = f"[{external_cam_input_idx}:v]scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
+        else:
+            cam_chain = f"[0:v]{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
+
         filter_chains = [
             bg_filter,
             f"[0:v]{gameplay_crop_filter}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{enhance_gp}format=rgba[gp_raw]",
-            f"[0:v]{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:flags=lanczos+accurate_rnd,{enhance_cam}format=rgba[cam_raw]",
+            cam_chain,
             f"[bg][cam_raw]overlay={webcam_x}:{webcam_y}:shortest=1:eof_action=repeat[bg_cam]",
             f"[bg_cam][gp_raw]overlay={gameplay_x}:{gameplay_y}:eof_action=repeat[bg_all]",
         ]
@@ -753,6 +748,11 @@ def build_composite_filtergraph(
         else:
             filter_chains.append(f"{base_overlay_layer}null[pre_sub]")
     else:
+        if external_cam_input_idx is not None:
+            cam_chain = f"[{external_cam_input_idx}:v]scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
+        else:
+            cam_chain = f"[0:v]{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
+
         filter_chains = [
             # 1. Background layer: Fill 9:16 vertical canvas
             bg_filter,
@@ -766,7 +766,7 @@ def build_composite_filtergraph(
             f"[bg_gp][gp_border]overlay={gameplay_x}:{gameplay_y}:eof_action=repeat[bg_gp_b]",
             
             # 3. Webcam card: crop face -> native pre-deblock -> scale with aspect ratio safety -> Topaz Iris facial enhancement -> mask -> border
-            f"[0:v]{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]",
+            cam_chain,
             f"[3:v]scale={webcam_w}:{webcam_h}[cam_mask]",
             f"[cam_raw][cam_mask]alphamerge[cam_masked]",
             f"[bg_gp_b][cam_masked]overlay={webcam_x}:{webcam_y}:eof_action=repeat[bg_all]",

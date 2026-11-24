@@ -3,10 +3,11 @@ import re
 import subprocess
 import json
 import uuid
+import shutil
 from typing import Dict, Any, List, Optional, Callable
 from backend.template_engine import generate_template_assets, build_composite_filtergraph, generate_hook_headline_asset
 from backend.subtitle_generator import generate_ass_subtitles, hex_to_ass_color
-from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, get_best_encoder, get_encoder_args, probe_hardware_encoders, get_cpu_info
+from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, REALESRGAN_BIN, get_best_encoder, get_encoder_args, probe_hardware_encoders, get_cpu_info
 
 OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "outputs"))
 TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "temp"))
@@ -317,6 +318,113 @@ def generate_preview_frame(
             
     return output_png
 
+def upscale_facecam_with_realesrgan(
+    video_path: str,
+    start_time: float,
+    duration: float,
+    webcam_crop: Optional[Dict[str, Any]],
+    target_w: int,
+    target_h: int,
+    input_fps: float = 30.0
+) -> Optional[str]:
+    """
+    Plug-and-play neural super-resolution for cropped facecam using Real-ESRGAN Vulkan.
+    Runs only when realesrgan-ncnn-vulkan is installed on the system.
+    Extracts facecam frames, enhances them with Real-ESRGAN, and reassembles into a clean temp video.
+    Returns the path to the upscaled facecam video, or None to fall back to FFmpeg clarity.
+    """
+    if not REALESRGAN_BIN or not os.path.isfile(REALESRGAN_BIN):
+        return None
+    if not webcam_crop:
+        return None
+
+    w_x = int(webcam_crop.get("x", 0))
+    w_y = int(webcam_crop.get("y", 0))
+    w_w = int(webcam_crop.get("width", 320))
+    w_h = int(webcam_crop.get("height", 240))
+    if w_w <= 0 or w_h <= 0:
+        return None
+
+    clip_id = uuid.uuid4().hex[:8]
+    session_temp_dir = os.path.join(TEMP_DIR, f"esrgan_{clip_id}")
+    in_dir = os.path.join(session_temp_dir, "in")
+    out_dir = os.path.join(session_temp_dir, "out")
+    os.makedirs(in_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+
+    cam_esrgan_path = os.path.join(TEMP_DIR, f"cam_esrgan_{clip_id}.mp4")
+
+    try:
+        # 1. Extract cropped facecam frames for the clip duration
+        extract_cmd = [
+            FFMPEG_BIN, "-y",
+            "-ss", str(start_time),
+            "-t", str(duration),
+            "-i", video_path,
+            "-vf", f"crop={w_w}:{w_h}:{w_x}:{w_y}",
+            "-q:v", "2",
+            os.path.join(in_dir, "frame_%06d.png")
+        ]
+        res_ext = subprocess.run(extract_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res_ext.returncode != 0:
+            return None
+
+        in_frames = [f for f in os.listdir(in_dir) if f.endswith(".png")]
+        if not in_frames:
+            return None
+
+        # 2. Run Real-ESRGAN ncnn Vulkan on extracted frames
+        model_name = "realesr-animevideov3"
+        scale = "2"
+        bin_dir = os.path.dirname(REALESRGAN_BIN)
+        models_dir = os.path.join(bin_dir, "models")
+        if os.path.isdir(models_dir):
+            if not any("animevideov3" in f.lower() for f in os.listdir(models_dir)):
+                if any("x4plus" in f.lower() for f in os.listdir(models_dir)):
+                    model_name = "realesrgan-x4plus"
+                    scale = "4"
+
+        esrgan_cmd = [
+            REALESRGAN_BIN,
+            "-i", in_dir,
+            "-o", out_dir,
+            "-n", model_name,
+            "-s", scale,
+            "-f", "png"
+        ]
+        if os.path.isdir(models_dir):
+            esrgan_cmd.extend(["-m", models_dir])
+
+        res_esr = subprocess.run(esrgan_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        if res_esr.returncode != 0:
+            print(f"[WARN] Real-ESRGAN exited with {res_esr.returncode}. Falling back to FFmpeg Pro Clarity.")
+            return None
+
+        out_frames = [f for f in os.listdir(out_dir) if f.endswith(".png")]
+        if not out_frames:
+            return None
+
+        # 3. Reassemble upscaled frames into a lossless/high-fidelity temp video
+        reassemble_cmd = [
+            FFMPEG_BIN, "-y",
+            "-framerate", str(input_fps),
+            "-i", os.path.join(out_dir, "frame_%06d.png"),
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "10",
+            "-pix_fmt", "yuv420p",
+            cam_esrgan_path
+        ]
+        res_asm = subprocess.run(reassemble_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res_asm.returncode == 0 and os.path.isfile(cam_esrgan_path):
+            return cam_esrgan_path
+        return None
+    except Exception as e:
+        print(f"[WARN] Facecam Real-ESRGAN upscaling error: {e}")
+        return None
+    finally:
+        shutil.rmtree(session_temp_dir, ignore_errors=True)
+
 def render_clip(
     video_path: str,
     clip_id: str,
@@ -516,6 +624,34 @@ def render_clip(
     in_w = int(vmeta.get("width", 1920))
     in_h = int(vmeta.get("height", 1080))
 
+    # Fast input seek (-ss and -t before -i video_path) for instant 0.05s keyframe seek
+    vdur = float(vmeta.get("duration", 0.0))
+    if vdur > 0.0:
+        if start_time >= vdur:
+            print(f"[WARN] Requested export start_time ({start_time}s) >= video duration ({vdur}s). Clamping to 0.0s.")
+            orig_dur = max(1.0, end_time - start_time)
+            start_time = 0.0
+            end_time = min(vdur, orig_dur)
+        elif end_time > vdur:
+            end_time = vdur
+    duration = max(0.5, end_time - start_time)
+
+    # Optional plug-and-play Real-ESRGAN neural facecam upscale pass
+    cam_esrgan_path = None
+    external_cam_idx = None
+    if template_config.get("facecam_ai_upscale", True) and os.path.isfile(REALESRGAN_BIN):
+        cam_esrgan_path = upscale_facecam_with_realesrgan(
+            video_path=video_path,
+            start_time=start_time,
+            duration=duration,
+            webcam_crop=template_config.get("webcam_crop"),
+            target_w=ww,
+            target_h=wh,
+            input_fps=float(vmeta.get("fps", 30.0))
+        )
+    if cam_esrgan_path and os.path.isfile(cam_esrgan_path):
+        external_cam_idx = 6 if hook_png else 5
+
     from backend.hardware import get_performance_profile
     perf_prof = get_performance_profile()
     active_encoder = encoder if (encoder and encoder != "auto") else get_best_encoder()
@@ -558,22 +694,11 @@ def render_clip(
         input_video_w=in_w,
         input_video_h=in_h,
         performance_tier=perf_prof.get("filter_mode"),
-        encoder_name=active_encoder
+        encoder_name=active_encoder,
+        external_cam_input_idx=external_cam_idx
     )
     
     # 5. Render using high quality settings and adaptive hardware acceleration
-    # Fast input seek (-ss and -t before -i video_path) for instant 0.05s keyframe seek
-    vdur = float(vmeta.get("duration", 0.0))
-    if vdur > 0.0:
-        if start_time >= vdur:
-            print(f"[WARN] Requested export start_time ({start_time}s) >= video duration ({vdur}s). Clamping to 0.0s.")
-            orig_dur = max(1.0, end_time - start_time)
-            start_time = 0.0
-            end_time = min(vdur, orig_dur)
-        elif end_time > vdur:
-            end_time = vdur
-    duration = max(0.5, end_time - start_time)
-    
     # Select smart default bitrate by canvas resolution and hardware profile when none is explicitly set
     if canvas_w >= 2160:
         default_bitrate = "35M"
@@ -598,10 +723,6 @@ def render_clip(
     ]
     if active_encoder == "h264_vaapi":
         base_cmd.extend(["-vaapi_device", "/dev/dri/renderD128"])
-    # Note: Hardware decoding (-hwaccel auto) is intentionally omitted here because multi-branch software filtergraphs
-    # (splitting [0:v] into background, gameplay, and webcam simultaneously) cause D3D11VA/DXVA2 surface pitch corruption
-    # (green split screen on the right half). Multi-threaded CPU decoding feeds pristine YUV frames into the filtergraph,
-    # while GPU hardware acceleration is leveraged on the output video encoder (h264_qsv / h264_nvenc).
 
     base_cmd.extend([
         "-ss", str(start_time),
@@ -614,6 +735,23 @@ def render_clip(
     ])
     if hook_png:
         base_cmd.extend(["-i", hook_png])
+    if cam_esrgan_path:
+        base_cmd.extend(["-i", cam_esrgan_path])
+
+    # Broadcast Audio Mastering (-14 LUFS + 192k AAC)
+    has_audio = bool(vmeta.get("audio_streams")) if "audio_streams" in vmeta else True
+    use_audio_mastering = has_audio and template_config.get("audio_mastering", True)
+
+    audio_render_args = []
+    if use_audio_mastering:
+        audio_render_args.extend([
+            "-af", "highpass=f=70,acompressor=threshold=-18dB:ratio=3.5:attack=5:release=120:makeup=2,loudnorm=I=-14:TP=-1.5:LRA=11"
+        ])
+    audio_render_args.extend([
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "48000"
+    ])
 
     full_cmd = list(base_cmd)
     full_cmd.extend([
@@ -622,9 +760,8 @@ def render_clip(
         "-map", "0:a?"
     ])
     full_cmd.extend(enc_args)
+    full_cmd.extend(audio_render_args)
     full_cmd.extend([
-        "-c:a", "aac",
-        "-b:a", "128k",
         "-t", str(duration),
         "-movflags", "+faststart",
         output_path
@@ -713,9 +850,8 @@ def render_clip(
                 "-map", "0:a?"
             ])
             fallback_cmd.extend(get_encoder_args("libx264", threads=eff_threads, bitrate=export_bitrate))
+            fallback_cmd.extend(audio_render_args)
             fallback_cmd.extend([
-                "-c:a", "aac",
-                "-b:a", "128k",
                 "-t", str(duration),
                 "-movflags", "+faststart",
                 output_path
@@ -733,6 +869,11 @@ def render_clip(
     if hook_png and os.path.exists(hook_png):
         try:
             os.remove(hook_png)
+        except Exception:
+            pass
+    if cam_esrgan_path and os.path.exists(cam_esrgan_path):
+        try:
+            os.remove(cam_esrgan_path)
         except Exception:
             pass
 

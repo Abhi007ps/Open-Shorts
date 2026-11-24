@@ -25,7 +25,7 @@ def check_directories():
 
 def verify_binaries():
     """Check availability of FFmpeg, FFprobe, and Whisper-CLI."""
-    from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI
+    from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, REALESRGAN_BIN
     
     # 1. FFmpeg
     try:
@@ -47,6 +47,12 @@ def verify_binaries():
             print(f"  [WARN] Whisper CLI returned: {res.returncode}")
     except Exception as e:
         print(f"  [WARN] Whisper CLI check: {e}")
+
+    # 3. Real-ESRGAN (Facecam Super-Resolution)
+    if os.path.isfile(REALESRGAN_BIN):
+        print(f"  [OK] Facecam Upscaler: {os.path.basename(REALESRGAN_BIN)} (Neural Facecam Super-Resolution active)")
+    else:
+        print("  [INFO] Facecam Upscaler: FFmpeg Pro Clarity mode (realesrgan-ncnn-vulkan optional)")
 
 def verify_models():
     """Ensure at least one Whisper GGML speech model is present; auto-download if empty."""

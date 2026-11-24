@@ -409,7 +409,7 @@ def download_stream_slice(
     elif quality == "1080p":
         fmt = "bestvideo[ext=mp4][vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best"
     else:  # "max", "source"
-        fmt = "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+        fmt = "bestvideo[height<=2160]+bestaudio/best"
 
     ydl_opts = {
         "download_ranges": yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
@@ -465,16 +465,27 @@ def download_stream_slice(
         ]
         res = subprocess.run(remux_cmd, capture_output=True)
         if res.returncode != 0:
-            # Fallback to ultrafast hardware/cpu muxing if stream copy is rejected by container
-            fallback_cmd = [
+            # Try copying original VP9/AV1 video stream with AAC audio transcode (preserves 100% 4K sharpness in seconds)
+            copy_v_cmd = [
                 FFMPEG_BIN, "-y",
                 "-i", downloaded_file,
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "17",
+                "-c:v", "copy",
                 "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "+faststart",
                 final_path
             ]
-            subprocess.run(fallback_cmd, capture_output=True, check=True)
+            res_v = subprocess.run(copy_v_cmd, capture_output=True)
+            if res_v.returncode != 0:
+                # Fallback to ultrafast hardware/cpu muxing if stream copy is rejected by container
+                fallback_cmd = [
+                    FFMPEG_BIN, "-y",
+                    "-i", downloaded_file,
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "17",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-movflags", "+faststart",
+                    final_path
+                ]
+                subprocess.run(fallback_cmd, capture_output=True, check=True)
         try:
             os.remove(downloaded_file)
         except Exception:
