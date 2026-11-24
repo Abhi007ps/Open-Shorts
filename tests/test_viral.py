@@ -1,10 +1,14 @@
 import os
 import sys
 import json
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 from backend.viral_detector import detect_viral_moments
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-uploads_dir = os.path.join(BASE_DIR, "storage", "uploads")
+uploads_dir = os.path.join(REPO_ROOT, "storage", "uploads")
 
 video_path = sys.argv[1] if len(sys.argv) > 1 else None
 if not video_path:
@@ -25,7 +29,7 @@ if not video_path or not os.path.isfile(video_path):
     print("No sample video found in storage/uploads. Please provide video path: python test_viral.py <path_to_video>")
     sys.exit(0)
 
-subs_file = os.path.join(BASE_DIR, "storage", "default_subtitles.json")
+subs_file = os.path.join(REPO_ROOT, "storage", "default_subtitles.json")
 subs = json.load(open(subs_file, "r", encoding="utf-8")) if os.path.exists(subs_file) else []
 
 print(f"Testing viral detection on: {video_path}")

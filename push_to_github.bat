@@ -2,8 +2,10 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-set "GIT=C:\Users\apsin\AppData\Local\Programs\Git\cmd\git.exe"
-if not exist "%GIT%" set "GIT=git"
+set "GIT="
+if exist "%LOCALAPPDATA%\Programs\Git\cmd\git.exe" set "GIT=%LOCALAPPDATA%\Programs\Git\cmd\git.exe"
+if not defined GIT if exist "%ProgramFiles%\Git\cmd\git.exe" set "GIT=%ProgramFiles%\Git\cmd\git.exe"
+if not defined GIT set "GIT=git"
 
 echo ===================================================
 echo     OpenShorts Studio - One-Click GitHub Sync

@@ -1,81 +1,93 @@
-# OpenShorts Custom Template Studio: User Guide & Verified Pipeline
+# OpenShorts Studio Pro: User Guide & Verified Pipeline
 
-````carousel
-![In-Card Video Position & Panning Controls](/C:/Users/apsin/.gemini/antigravity/brain/d9e2819f-df12-4455-afbb-dbec68e0d6e6/gameplay_pan_controls_verified.png)
-<!-- slide -->
-![Live 9:16 Canvas with Left Shift Framing](/C:/Users/apsin/.gemini/antigravity/brain/d9e2819f-df12-4455-afbb-dbec68e0d6e6/gameplay_pan_canvas_verified.png)
-<!-- slide -->
-![Exported Video with MrBeast Styled Subtitles & Resized Gameplay](/C:/Users/apsin/.gemini/antigravity/brain/d9e2819f-df12-4455-afbb-dbec68e0d6e6/export_styled_modal_verified.png)
-<!-- slide -->
-![Burnt Karaoke Subtitles Verification Frame](/C:/Users/apsin/.gemini/antigravity/brain/d9e2819f-df12-4455-afbb-dbec68e0d6e6/subtitles_mrbeast_verified.jpg)
-<!-- slide -->
-![Words Shown at a Time & Whisper Model Selector](/C:/Users/apsin/.gemini/antigravity/brain/d9e2819f-df12-4455-afbb-dbec68e0d6e6/subtitles_words_and_preset_verified.png)
-<!-- slide -->
-![Background Blur Strength Presets & Smooth Range](/C:/Users/apsin/.gemini/antigravity/brain/d9e2819f-df12-4455-afbb-dbec68e0d6e6/blur_controls_verified.png)
-````
+OpenShorts Studio is an automated, hardware-adaptive AI clipping studio that transforms long-form streams and widescreen videos into viral, platform-optimized 9:16 vertical shorts (YouTube Shorts, Instagram Reels, TikTok).
 
-OpenShorts Studio is running locally at **[http://localhost:8000](http://localhost:8000)**.
+Running locally: **[http://localhost:8000](http://localhost:8000)** (or `http://127.0.0.1:8000`)
 
 ---
 
-## 1. Centered Gameplay Card Sizing, In-Card Positioning & Framing
+## Studio Interface Overview
 
-> [!TIP]
-> You now have full creative control over both the gameplay card dimensions on the canvas AND the exact positioning/panning of the video inside the card.
+![OpenShorts Studio Pro Interface](images/studio_redesign_verified.png)
 
-Under **Tab 2: Template > Centered Gameplay Card Sizing & Framing**:
-- **Continuous Card Dimensions**:
-  - **Card Width**: Scale from `600px` up to `1080px` (full-bleed width).
-  - **Card Height**: Scale from `350px` up to `900px`.
-  - **Lock 16:9 Aspect Ratio**: Automatically syncs height to maintain widescreen proportions.
-- **Card Placement on Canvas**:
-  - **Vertical Position (Y)**: Slide vertically between `400px` and `1100px`.
-  - **Center Y**: Instantly snaps the card to `(1920 - H) / 2`.
-- **In-Card Video Position (Pan & Frame)**:
-  - **Horizontal Position (Pan X)**: Shift video left or right inside the card (`-100%` Left to `+100%` Right). Dynamic readout displays `Center`, `30% Left`, `40% Right`.
-  - **Vertical Position (Pan Y)**: Shift video up or down inside the card (`-100%` Up to `+100%` Down). Dynamic readout displays `Center`, `20% Up`, `30% Down`.
-  - **Nudge Arrow Buttons** (`◀`, `▶`, `▲`, `▼`): Fine-tune framing by 5% increments.
-  - **Center Video Reset**: Snaps both Pan X and Pan Y back to optical `(0%, 0%)`.
-  - **Framing Presets**:
-    - `Center Action`: Optical center.
-    - `Left Shift (-40%)`: Focuses on left-side action or streamer webcams in gameplay.
-    - `Right Shift (+40%)`: Focuses on right-side action.
-    - `Top/HUD (-30%)`: Focuses on upper minimap, health bars, and HUD elements.
-    - `Bottom Action (+30%)`: Focuses on weapon crosshairs and lower gameplay.
-- **Smart Framing Zoom Assist**:
-  - Automatically ensures framing headroom (`1.15x`–`1.25x`) when panning so video movement is smooth without letterbox gaps.
+OpenShorts Studio Pro features an obsidian dark-mode interface with a 2-pane Non-Linear Editor (NLE) layout:
+- **Left Inspector Pane**: Complete controls for stream loading, AI viral detection, layout templating, subtitle styling, enhancer effects, and batch exporting.
+- **Center Resizer**: Mouse-draggable divider to smoothly adjust the workspace width according to your display.
+- **Right Preview Stage**: Live, high-fidelity 9:16 vertical canvas with realistic Shorts/Reels/TikTok safe-zone overlays.
 
 ---
 
-## 2. High-Accuracy Whisper Token Synchronization
+## 1. Stream Loading & Story-First AI Clip Discovery
 
-> [!IMPORTANT]
-> Subtitle transcription uses full Whisper BPE token timestamps (`-ojf`), eliminating timing jitter and uneven time-splitting.
+![Clean Preview Canvas](images/clean_preview_verified.png)
 
-- **True Millisecond Word Timestamps**: Subtitle word start and end offsets are extracted directly from Whisper's acoustic neural alignment.
-- **Local Models**:
-  - **Fast English (`tiny.en`)**: High accuracy with rapid 2–3s inference per clip.
-  - **Deep Neural (`base`)**: Deep multi-language accuracy for accented speech or noisy game audio.
+### Loading Footage:
+1. **Local Video**: Drop any `.mp4`, `.mkv`, `.mov`, `.webm`, `.ts`, `.avi`, or `.m4v` into the studio.
+2. **YouTube / Livestreams**: Paste any public video or livestream URL. OpenShorts uses `yt-dlp` to probe streams without downloading multi-gigabyte files up-front.
 
----
-
-## 3. "Words Shown at a Time" (Per-Screen Chunking)
-
-- **Instant Chunking**: Select `1 Word (Punchy)`, `2 Words`, `3 Words (Viral Sweet-Spot)`, `4 Words`, or `Full Phrase`.
-- **Re-Group Active Subtitles Button**: Instantly re-chunks existing transcripts without re-transcribing.
-
----
-
-## 4. Vibrant Subtitle Styling & Templates
-
-- **MrBeast**: Sunburst Yellow (`#FFE600`) with Neon Lime (`#00FF66`) highlight and 6px stroke.
-- **Hormozi**: Crisp White (`#FFFFFF`) with Electric Gold (`#FFDE00`) highlight and 5px stroke.
-- **Neon Cyber Glow**: Electric Cyan (`#00F5FF`) with Hot Magenta (`#FF007F`) highlight.
-- **Fire Red Alert**, **Box Pill**, and **Clean Sky**.
+### AI Story-First Curation:
+- **Heatmap & Chat Excitement**: Scans YouTube "Most Replayed" heatmaps and acoustic/pitch excitement peaks to pinpoint candidate moments.
+- **Micro-Story Structuring**: Leverages `qwen3:8b` via Ollama to curate complete narrative arcs:
+  - **Hook** (0–3s): An arresting opening statement or action.
+  - **Buildup**: Contextual dialogue and rising tension.
+  - **Payoff / Punchline**: Climax, punchline, or epic gameplay climax.
+- **Sentence-Locked Snapping**: Automatically snaps cut boundaries to natural speech pauses so sentences are never clipped mid-word.
 
 ---
 
-## 5. Global Batch Synchronization & Background Blur
+## 2. Dynamic 9:16 Templates & Facecam Framing
 
-- **Apply to All**: Broadcasts webcam crop, gameplay card dimensions, framing pan, zoom level, background blur radius, and subtitle styling across all loaded clips in 1 click.
-- **Adjustable Background Blur**: Fast Gaussian-equivalent bokeh from `0px` to `80px`.
+![In-Card Video Position & Panning Controls](images/gameplay_pan_controls_verified.png)
+
+![Live 9:16 Canvas with Left Shift Framing](images/gameplay_pan_canvas_verified.png)
+
+### Layout Modes:
+- **Floating Facecam**: Seamless floating circular or rounded-rectangular facecam above centered widescreen gameplay.
+- **Split-Screen (Top/Bottom)**: Classic streamer layout with 1:1 or 16:9 webcam on top and 16:9 gameplay on the bottom.
+
+### Centered Gameplay Framing:
+- **Continuous Card Dimensions**: Resize width (`600px` to `1080px`) and height (`350px` to `900px`).
+- **Interactive Panning (Pan X / Pan Y)**: Shift video left, right, up, or down inside the frame to center crucial HUD, minimap, or gameplay action.
+- **Aspect Ratio Lock**: Keep gameplay locked to true 16:9 widescreen or scale freely.
+- **Background Bokeh**: Fast Gaussian-equivalent background blur (`0px` to `80px`) with adjustable dark vignette for subtitle contrast.
+
+---
+
+## 3. Zero-Blink DTW Subtitles & Animations
+
+![Words Shown at a Time & Whisper Model Selector](images/subtitles_words_and_preset_verified.png)
+
+![Burnt Karaoke Subtitles Verification Frame](images/subtitles_mrbeast_verified.jpg)
+
+### Millisecond Dynamic Time Warping (DTW):
+- Whisper acoustic neural alignment produces millisecond word start and end timestamps.
+- Multi-word karaoke phrases maintain strict monotonic intervals (`end >= start + 0.04s`) with **zero blank gaps between words**, eliminating subtitle blinking.
+
+### Viral Caption Presets:
+- **Hormozi**: Crisp White (`#FFFFFF`) with Electric Gold (`#FFDE00`) word highlights and deep drop-shadow.
+- **MrBeast**: Sunburst Yellow (`#FFE600`) with Neon Lime (`#00FF66`) highlight and heavy black border.
+- **Neon Cyber**: Electric Cyan (`#00F5FF`) with Hot Magenta (`#FF007F`) karaoke glow.
+- **Fire Red Alert**, **Box Pill**, **Clean Sky**, and **Minimal Modern**.
+
+### "Words Shown at a Time" (Per-Screen Chunking):
+- Choose between `1 Word (Punchy)`, `2 Words`, `3 Words (Viral Sweet-Spot)`, `4 Words`, or `Full Phrase`.
+- Use the **Re-Group Active Subtitles** button to instantly re-chunk transcripts without re-running transcription.
+
+---
+
+## 4. Auto-Adaptive Hardware Acceleration
+
+OpenShorts Studio automatically profiles your hardware on launch:
+- **Hardware Encoders**: NVIDIA (`h264_nvenc`), Intel QuickSync (`h264_qsv`), AMD (`h264_amf`), Apple Silicon (`h264_videotoolbox`), Linux VA-API (`h264_vaapi`), or CPU (`libx264`).
+- **Mask Caching**: Pillow-generated alpha masks and borders are cached in `assets/cache/` to eliminate redundant filtergraph computations.
+- **Concurrency Scaling**: Automatically scales parallel render workers based on detected physical CPU cores and VRAM capacity.
+
+---
+
+## 5. Export Gallery & Video Modal
+
+![Exported Video Modal](images/export_styled_modal_verified.png)
+
+- **Interactive Gallery**: Exported clips are listed with duration, file size, timestamp, and cover thumbnails.
+- **Instant Modal Player**: Click any clip in the gallery to preview it in a popup player with a direct download button.
+- **Batch ZIP Download**: Export multiple clips simultaneously and download them in a single compressed ZIP archive.

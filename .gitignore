@@ -1,6 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
 *$py.class
 *.so
 
@@ -47,12 +49,6 @@ storage/temp/*
 storage/thumbnails/*
 !storage/thumbnails/.gitkeep
 
-storage/exports/*
-!storage/exports/.gitkeep
-
-storage/custom_export/*
-!storage/custom_export/.gitkeep
-
 # Session state & temporary runtime logs
 storage/temp/session_state.json
 *.log
@@ -63,7 +59,8 @@ scratch/
 inspect/
 
 # Runtime-generated overlay masks & borders
-assets/cache/
+assets/cache/*
+!assets/cache/.gitkeep
 assets/*.png
 assets/gameplay_border.png
 assets/gameplay_mask.png

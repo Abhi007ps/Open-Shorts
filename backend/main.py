@@ -154,13 +154,16 @@ def ensure_ollama_daemon():
     try:
         from backend.llm_engine import is_ollama_online
         if not is_ollama_online(timeout=1.0):
+            ollama_bin = shutil.which("ollama") or shutil.which("ollama.exe")
             ollama_candidates = [
                 os.path.expanduser(r"~\AppData\Local\Programs\Ollama\ollama.exe"),
-                r"C:\Users\apsin\AppData\Local\Programs\Ollama\ollama.exe",
-                "ollama.exe"
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"),
+                ollama_bin,
+                "ollama.exe",
+                "ollama"
             ]
             for c in ollama_candidates:
-                if os.path.exists(c):
+                if c and (os.path.exists(c) or shutil.which(c)):
                     print(f"[*] Starting local Ollama daemon from {c}...")
                     subprocess.Popen([c, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     break

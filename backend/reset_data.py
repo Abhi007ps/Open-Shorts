@@ -20,6 +20,7 @@ UPLOADS_DIR = os.path.join(STORAGE_DIR, "uploads")
 OUTPUTS_DIR = os.path.join(STORAGE_DIR, "outputs")
 TEMPLATES_DIR = os.path.join(STORAGE_DIR, "templates")
 THUMBNAILS_DIR = os.path.join(STORAGE_DIR, "thumbnails")
+ASSETS_CACHE_DIR = os.path.join(BASE_DIR, "assets", "cache")
 
 def clean_directory(dir_path: str, preserve_demo: bool = False):
     if not os.path.exists(dir_path):
@@ -66,11 +67,12 @@ def reset_to_clean_slate():
     print("=====================================================================")
     print("\n[*] Clearing previous user session data...")
 
-    # 1. Clean storage directories
+    # 1. Clean storage directories and asset cache
     clean_directory(OUTPUTS_DIR)
     clean_directory(TEMP_DIR)
     clean_directory(THUMBNAILS_DIR)
     clean_directory(TEMPLATES_DIR)
+    clean_directory(ASSETS_CACHE_DIR)
     clean_directory(UPLOADS_DIR, preserve_demo=True)
 
     # 2. Clean pycache
