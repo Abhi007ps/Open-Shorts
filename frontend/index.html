@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenShorts Studio Pro - AI Highlights & Viral Shorts</title>
+  <link rel="stylesheet" href="/static/styles.css?v=2.6">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+  <!-- Minimalist Studio Top Bar -->
+  <header>
+    <div class="logo-group">
+      <div class="logo-badge">
+        <i class="fa-solid fa-bolt"></i> OPENSHORTS
+      </div>
+      <div class="header-title">
+        <h1>Studio Pro <span class="pro-badge">ULTRA</span></h1>
+      </div>
+    </div>
+    <div class="header-actions">
+      <!-- Interactive Hardware Acceleration Selector -->
+      <div class="hw-selector-wrapper">
+        <div id="hw-status-badge" class="badge" title="Hardware Acceleration Engine • Click to select available encoder" style="cursor: pointer; user-select: none;">
+          <i class="fa-solid fa-microchip" style="color: var(--accent-lime);"></i>
+          <span id="hw-status-text">Detecting Hardware...</span>
+          <i class="fa-solid fa-chevron-down" style="font-size: 9px; margin-left: 4px; opacity: 0.7;"></i>
+        </div>
+        
+        <!-- Hardware Selection Dropdown Popover -->
+        <div id="hw-selector-dropdown" class="hw-dropdown" style="display: none;">
+          <div class="hw-dropdown-header">
+            <div style="font-size: 11px; font-weight: 700; color: #FFFFFF; display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-microchip" style="color: var(--accent-lime);"></i> Hardware Acceleration Engine
+            </div>
+            <span class="badge badge-active" id="hw-dropdown-detected-badge" style="font-size: 9px;">Probed</span>
+          </div>
+          <div style="font-size: 10px; color: var(--text-dim); margin: 6px 0 10px 0;">
+            Click an available hardware encoder to activate it for instant 4K AI rendering:
+          </div>
+          <div id="hw-options-list" style="display: flex; flex-direction: column; gap: 6px;">
+            <!-- Dynamically populated by app.js -->
+          </div>
+          <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center; font-size: 9.5px; color: var(--text-dim);">
+            <span id="hw-dropdown-cpu-info"><i class="fa-solid fa-cpu"></i> CPU: Probing...</span>
+            <span id="hw-dropdown-gpu-info"><i class="fa-solid fa-display"></i> GPU: Probing...</span>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="btn-load-demo" title="Load sample live stream footage">
+        <i class="fa-solid fa-film"></i> Demo
+      </button>
+      <button class="btn btn-secondary btn-sm" id="btn-factory-reset" title="Clean slate reset for new user" style="color: var(--accent-rose); border-color: rgba(244, 63, 94, 0.3);">
+        <i class="fa-solid fa-rotate-left"></i> Fresh Start
+      </button>
+      <div style="display: flex; gap: 4px; align-items: center;">
+        <button class="btn btn-lime btn-sm" id="btn-open-folder" title="Open Export Directory">
+          <i class="fa-solid fa-folder-open"></i> Export Folder
+        </button>
+        <button class="btn btn-secondary btn-sm" id="btn-change-export-folder" title="Change Output Location" style="padding: 5px 8px;">
+          <i class="fa-solid fa-pen-to-square"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Studio Layout -->
+  <main class="app-container">
+
+    <!-- Left Column: Controls & Configuration -->
+    <section class="controls-panel">
+      
+      <!-- Modern Navigation Tabs -->
+      <nav class="tabs-nav">
+        <button class="tab-btn active" data-tab="tab-clips"><i class="fa-solid fa-fire"></i> 1. Clips</button>
+        <button class="tab-btn" data-tab="tab-template"><i class="fa-solid fa-layer-group"></i> 2. Template</button>
+        <button class="tab-btn" data-tab="tab-subtitles"><i class="fa-solid fa-closed-captioning"></i> 3. Subtitles</button>
+        <button class="tab-btn" data-tab="tab-enhance"><i class="fa-solid fa-wand-magic-sparkles"></i> 4. 4K AI</button>
+        <button class="tab-btn" data-tab="tab-export"><i class="fa-solid fa-download"></i> 5. Export</button>
+      </nav>
+
+      <!-- TAB 1: Clips & Video Source -->
+      <div class="tab-content active" id="tab-clips">
+        <div class="card">
+          <div class="card-title">
+            <span><i class="fa-solid fa-upload"></i> Video Source</span>
+            <span class="badge" id="video-status-badge">No video loaded</span>
+          </div>
+
+          <div class="form-group">
+            <input type="file" id="input-file-picker" accept="video/*,.mp4,.mkv,.mov,.avi,.webm" style="display: none;">
+            
+            <!-- Drag-and-Drop Upload Card -->
+            <div id="drop-zone" style="border: 1px dashed rgba(255, 255, 255, 0.16); border-radius: var(--radius-md); padding: 18px 14px; text-align: center; cursor: pointer; background: rgba(255, 255, 255, 0.02); transition: all 0.2s; margin-bottom: 10px;">
+              <i class="fa-solid fa-cloud-arrow-up" style="font-size: 24px; color: var(--accent-lime); margin-bottom: 6px; display: block;"></i>
+              <strong style="color: #fff; font-size: 13px; display: block; margin-bottom: 2px;">Browse or Drop Any Video File</strong>
+              <span style="font-size: 11px; color: var(--text-dim);">MP4, MKV, MOV, WEBM, AVI (All Stream Formats)</span>
+            </div>
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px; margin-bottom: 4px;">
+              <label style="font-size: 10px; color: var(--text-dim); text-transform: uppercase;">Or Enter File Path on Windows</label>
+              <span style="font-size: 10px; color: var(--accent-lime); font-weight: 700;"><i class="fa-solid fa-bolt"></i> Instant 0s Load</span>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <input type="text" id="input-video-path" placeholder="C:\Users\username\Videos\stream.mp4" value="">
+              <button class="btn btn-primary btn-sm" id="btn-load-path"><i class="fa-solid fa-arrow-right"></i> Load</button>
+            </div>
+            <p style="font-size: 10.5px; color: var(--text-dim); margin: 5px 0 0 0;">
+              💡 <strong>Tip for 1-hour+ streams:</strong> Shift + Right-Click video in File Explorer &rarr; <em>"Copy as path"</em> &rarr; Paste for zero-wait load.
+            </p>
+
+            <div id="file-upload-status" style="display: none; margin-top: 10px; background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 11px;">
+                <span id="file-upload-text" style="color: var(--accent-cyan); display: flex; align-items: center; gap: 6px;">
+                  <i class="fa-solid fa-spinner fa-spin"></i> Loading video...
+                </span>
+                <span id="file-upload-percent" style="font-weight: 700; color: #fff;">0%</span>
+              </div>
+              <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+                <div id="file-upload-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-primary)); transition: width 0.15s ease;"></div>
+              </div>
+            </div>
+
+            <!-- Stream URL Loader (YouTube / Twitch / Kick VODs) -->
+            <div id="stream-url-card" style="margin-top: 12px; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: var(--radius-md); padding: 12px 14px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 11px; color: var(--accent-cyan); font-weight: 700; text-transform: uppercase; display: flex; align-items: center; gap: 6px;">
+                  <i class="fa-brands fa-youtube" style="color: #FF0000;"></i>
+                  <i class="fa-brands fa-twitch" style="color: #9146FF;"></i>
+                  <i class="fa-brands fa-kickstarter-k" style="color: #53FC18;"></i>
+                  Load 6h–20h Stream via Link
+                </label>
+                <span class="badge badge-active" style="font-size: 9px;"><i class="fa-solid fa-bolt"></i> Zero Full Download</span>
+              </div>
+              
+              <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+                <input type="text" id="input-stream-url" placeholder="Paste YouTube, Twitch VOD, or Kick stream link..." value="" style="flex: 1;">
+                <button class="btn btn-primary btn-sm" id="btn-probe-stream" type="button" style="white-space: nowrap;">
+                  <i class="fa-solid fa-magnifying-glass"></i> Probe Stream
+                </button>
+              </div>
+
+              <!-- Stream Probed Metadata Box (hidden initially) -->
+              <div id="stream-probed-box" style="display: none; background: rgba(0,0,0,0.5); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 8px;">
+                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 8px;">
+                  <img id="stream-thumb-img" src="" alt="Stream Thumbnail" style="width: 72px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border-subtle);">
+                  <div style="flex: 1; min-width: 0;">
+                    <div id="stream-title-text" style="font-size: 12px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div>
+                    <div style="display: flex; gap: 10px; font-size: 10.5px; color: var(--text-dim); margin-top: 2px;">
+                      <span id="stream-uploader-text"><i class="fa-solid fa-user"></i> Streamer</span>
+                      <span id="stream-duration-text" style="color: var(--accent-lime); font-weight: 700;"><i class="fa-solid fa-clock"></i> 0h 0m</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Range Extractor Controls -->
+                <div style="border-top: 1px solid var(--border-subtle); padding-top: 8px;">
+                  <div style="font-size: 10px; color: var(--text-dim); text-transform: uppercase; font-weight: 700; margin-bottom: 4px;">
+                    Select Stream Time Slice (H:M:S)
+                  </div>
+                  <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 8px;">
+                    <input type="text" id="input-stream-start" placeholder="01:30:00" style="flex: 1; font-family: var(--font-mono); font-size: 11px; padding: 6px 8px;">
+                    <span style="color: var(--text-muted); font-size: 11px;">to</span>
+                    <input type="text" id="input-stream-end" placeholder="01:45:00" style="flex: 1; font-family: var(--font-mono); font-size: 11px; padding: 6px 8px;">
+                    <button class="btn btn-lime btn-sm" id="btn-clip-stream-range" type="button" style="white-space: nowrap; padding: 6px 12px;">
+                      <i class="fa-solid fa-bolt"></i> Clip &amp; Load Slice
+                    </button>
+                  </div>
+
+                  <!-- Quality Selector & Presets Row -->
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+                    <div class="preset-pills" id="stream-quick-presets">
+                      <button class="preset-pill" type="button" data-dur="900">First 15m</button>
+                      <button class="preset-pill" type="button" data-dur="1800">First 30m</button>
+                      <button class="preset-pill" type="button" data-dur="3600">First 1 Hour</button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <label style="font-size: 10px; color: var(--accent-lime); font-weight: 700; margin: 0; white-space: nowrap;">
+                        <i class="fa-solid fa-crown"></i> QUALITY:
+                      </label>
+                      <select id="select-stream-quality" style="background: rgba(0,0,0,0.6); border: 1px solid rgba(163, 230, 53, 0.4); color: #fff; font-size: 11px; font-weight: 600; border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer;">
+                        <option value="max" selected>🌟 Max Quality (4K / 1440p / 1080p60)</option>
+                        <option value="1080p">⚡ 1080p High Bitrate</option>
+                        <option value="720p">🚀 720p Fast Download</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <!-- AI Audio-First Fast Hunter Button -->
+                  <div style="display: flex; gap: 6px; margin-top: 4px;">
+                    <button class="btn btn-secondary btn-sm" id="btn-stream-hunt-moments" type="button" style="flex: 1; justify-content: center; border-color: rgba(99, 102, 241, 0.4); color: #C7D2FE;">
+                      <i class="fa-solid fa-wand-magic-sparkles" style="color: var(--accent-primary);"></i> AI Discover Moments
+                    </button>
+                    <button class="btn btn-lime btn-sm" id="btn-stream-scan-audio" type="button" style="white-space: nowrap; font-size: 11px; padding: 6px 12px; font-weight: 700;" title="OpusClip Fast Architecture: pulls 30MB voice audio in 3s & scans excitement peaks">
+                      <i class="fa-solid fa-bolt"></i> ⚡ Audio-First (3s)
+                    </button>
+                  </div>
+
+                  <div id="stream-candidates-list" style="display: none; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 180px; overflow-y: auto;">
+                    <!-- Injected dynamically -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Stream Load Progress Bar -->
+              <div id="stream-progress-box" style="display: none; margin-top: 8px; background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 11px;">
+                  <span id="stream-progress-text" style="color: var(--accent-lime); display: flex; align-items: center; gap: 6px;">
+                    <i class="fa-solid fa-spinner fa-spin"></i> Extracting stream slice...
+                  </span>
+                  <span id="stream-progress-percent" style="font-weight: 700; color: #fff;">0%</span>
+                </div>
+                <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+                  <div id="stream-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-lime), var(--accent-cyan)); transition: width 0.2s ease;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-row" id="video-meta-box" style="display: none; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); padding: 8px 12px; border-radius: var(--radius-sm); margin-top: 8px; font-size: 11px;">
+            <div><strong style="color:var(--text-dim);">Res:</strong> <span id="meta-res" style="color:#fff;">-</span></div>
+            <div><strong style="color:var(--text-dim);">Duration:</strong> <span id="meta-duration" style="color:#fff;">-</span></div>
+            <div><strong style="color:var(--text-dim);">FPS:</strong> <span id="meta-fps" style="color:#fff;">-</span></div>
+          </div>
+        </div>
+
+        <!-- Viral Moments Clipper -->
+        <div class="card">
+          <div class="card-title">
+            <span><i class="fa-solid fa-fire" style="color: var(--accent-lime);"></i> High-Potential Viral Clipper</span>
+            <span class="badge badge-active" id="clips-count-badge">0 clips ready</span>
+          </div>
+
+          <!-- Auto vs Manual Mode -->
+          <div class="form-group">
+            <label>Moment Selection Mode</label>
+            <div class="preset-pills" style="margin-bottom: 6px;">
+              <button class="preset-pill active" id="mode-auto"><i class="fa-solid fa-wand-magic-sparkles"></i> Auto AI (High-Retention Climaxes)</button>
+              <button class="preset-pill" id="mode-manual"><i class="fa-solid fa-sliders"></i> Manual Number</button>
+            </div>
+            
+            <div id="auto-mode-hint" style="font-size: 11px; color: var(--accent-lime); background: rgba(212, 255, 0, 0.05); border: 1px solid rgba(212, 255, 0, 0.2); padding: 6px 10px; border-radius: var(--radius-sm); margin-top: 4px; display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-check"></i> Automatically detects high-outburst screams, hilarious dialogue & peak reactions.
+            </div>
+
+            <div id="manual-clips-container" style="display: none; margin-top: 6px;">
+              <label style="font-size: 11px;">Exact Number of Clips Desired</label>
+              <input type="number" id="input-target-clips" min="1" max="25" value="5">
+            </div>
+          </div>
+
+          <!-- Duration bounds -->
+          <div class="form-row">
+            <div class="form-group">
+              <label>Min Duration</label>
+              <div class="slider-container">
+                <input type="range" id="slider-min-dur" min="10" max="30" value="15">
+                <span class="slider-val" id="val-min-dur">15s</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Max Duration</label>
+              <div class="slider-container">
+                <input type="range" id="slider-max-dur" min="20" max="60" value="55">
+                <span class="slider-val" id="val-max-dur">55s</span>
+              </div>
+            </div>
+          </div>
+
+          <button class="btn btn-lime" id="btn-detect-clips" style="width: 100%; margin-top: 4px; padding: 10px 14px; font-size: 13px;">
+            <i class="fa-solid fa-bolt"></i> Extract High-Potential Viral Clips
+          </button>
+
+          <!-- Detection Progress -->
+          <div id="detection-progress" style="display: none; margin-top: 10px; background: rgba(0,0,0,0.5); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 11px;">
+              <span id="detection-status-text" style="color: var(--accent-lime); display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-spinner fa-spin"></i> Analyzing stream audio & facecam...
+              </span>
+              <span id="detection-percent" style="font-weight: 700; color: #fff;">0%</span>
+            </div>
+            <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+              <div id="detection-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-primary), var(--accent-lime)); transition: width 0.2s ease;"></div>
+            </div>
+          </div>
+
+          <!-- Detected Clips Container -->
+          <div style="margin-top: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+              <label style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; margin-bottom: 0;">
+                Detected Viral Highlights
+              </label>
+              <div style="display: flex; gap: 6px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-set-full-duration" onclick="window.useFullVideoAsClip()" style="font-size: 11px; padding: 3px 8px;" title="Set active clip to 100% full duration of loaded video">
+                  <i class="fa-solid fa-expand" style="color: var(--accent-lime);"></i> Full Duration (All)
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="window.addNewCustomClip()" style="font-size: 11px; padding: 3px 8px;" title="Add a custom clip">
+                  <i class="fa-solid fa-plus"></i> Add Clip
+                </button>
+              </div>
+            </div>
+            <div class="clips-grid" id="clips-list">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: Template & Layout -->
+      <div class="tab-content" id="tab-template">
+        <!-- Master Clip Template Card -->
+        <div class="card" id="card-master-template" style="border: 1px solid rgba(212, 255, 0, 0.25); background: linear-gradient(135deg, rgba(15, 22, 36, 0.95), rgba(20, 28, 48, 0.85));">
+          <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span><i class="fa-solid fa-bookmark" style="color: var(--accent-lime);"></i> Master Clip Template</span>
+              <span class="badge badge-active" id="badge-master-status">Active</span>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <button class="btn btn-primary btn-sm" id="btn-save-master-template" type="button" title="Save current template">
+                <i class="fa-solid fa-floppy-disk"></i> Save Master
+              </button>
+              <button class="btn btn-lime btn-sm" id="btn-apply-master-template" type="button" title="Apply to all clips">
+                <i class="fa-solid fa-bolt"></i> Apply All
+              </button>
+            </div>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--text-secondary); background: rgba(0,0,0,0.3); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <div id="master-template-summary" style="display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-circle-check" style="color: var(--accent-lime);"></i>
+              <span id="master-template-text">Stored: Speed Split-Screen (50/50) with Divider</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 5px; color: #fff; font-weight: 600;">
+                <input type="checkbox" id="check-auto-apply-master" checked style="accent-color: var(--accent-lime);"> Auto-Apply
+              </label>
+              <button class="btn btn-secondary btn-sm" id="btn-reset-master-template" type="button" style="padding: 2px 6px; font-size: 10px; color: var(--accent-rose);">
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Canvas Output & Background -->
+        <div class="card">
+          <div class="card-title">
+            <span><i class="fa-solid fa-sliders"></i> Canvas & Divider Styling</span>
+            <span class="badge badge-cyan">Split-Screen Pro</span>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Output Canvas</label>
+              <select id="select-canvas">
+                <option value="1080x1920" selected>9:16 Full HD (1080 x 1920) - 1400px Active Split</option>
+                <option value="1080x1400">🔥 Viral Speed Ratio (1080 x 1400 - Exact Reference)</option>
+                <option value="720x1280">9:16 HD (720 x 1280)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Letterbox Background</label>
+              <div style="font-size: 11px; color: var(--accent-lime); font-weight: 600; padding: 7px 10px; background: rgba(204, 255, 0, 0.08); border: 1px solid rgba(204, 255, 0, 0.2); border-radius: var(--radius-sm); display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-square" style="color: #000000; border: 1px solid #555; border-radius: 2px;"></i> Pure Black (#000000) Letterbox
+              </div>
+            </div>
+          </div>
+
+          <!-- Split-Screen Center Divider Controls -->
+          <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 11.5px; font-weight: 700; color: #FFFFFF; display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-grip-lines" style="color: var(--accent-lime);"></i> Center Divider Bar (Width / Thickness)
+              </span>
+              <span class="badge badge-active" id="divider-badge">4px SOLID</span>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Divider Line Thickness</label>
+                <div class="slider-container">
+                  <input type="range" id="slider-divider-w" min="0" max="16" step="1" value="4">
+                  <span class="slider-val" id="val-divider-w">4px</span>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Divider Color</label>
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 2px;">
+                  <input type="color" id="color-divider" value="#FFFFFF">
+                  <span style="font-size: 11px; font-family: var(--font-mono);" id="hex-divider">#FFFFFF</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Divider Quick Presets -->
+            <div class="preset-pills" style="margin-top: 6px;">
+              <button class="preset-pill" type="button" data-div="0">0px (No Line)</button>
+              <button class="preset-pill" type="button" data-div="2">2px (Thin)</button>
+              <button class="preset-pill active" type="button" data-div="4">4px (Speed Viral)</button>
+              <button class="preset-pill" type="button" data-div="8">8px (Thick)</button>
+              <button class="preset-pill" type="button" data-div="12">12px (Bold Bar)</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 16:9 Stream Facecam Crop Reticle -->
+        <div class="card" id="card-facecam-resizer">
+          <div class="card-title">
+            <span><i class="fa-solid fa-crop-simple" style="color: var(--accent-lime);"></i> Stream Facecam 16:9 Framing</span>
+            <span id="cam-shape-badge" class="badge badge-active">16:9 STREAM FRAMING</span>
+          </div>
+
+          <div style="font-size: 11.5px; color: var(--text-secondary); margin-bottom: 12px; line-height: 1.4;">
+            <i class="fa-solid fa-circle-info" style="color: var(--accent-cyan);"></i> Position and resize the 16:9 frame over the stream's facecam. Just like the bottom gameplay section, this frame seamlessly fills the top half of the vertical split screen without letterboxing, squishing, or distortion.
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; background: rgba(0, 245, 255, 0.05); padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid rgba(0, 245, 255, 0.2);">
+            <label style="font-size: 11px; font-weight: 700; color: #FFFFFF; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="check-reticle-aspect" checked style="accent-color: var(--accent-neon);">
+              <span><i class="fa-solid fa-lock" style="color: var(--accent-neon);"></i> Lock 16:9 Aspect Ratio (Original Stream Framing)</span>
+            </label>
+            <span id="reticle-aspect-badge" style="font-size: 10px; color: var(--accent-neon); font-weight: 700;">16:9 LOCKED</span>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label><i class="fa-solid fa-arrows-left-right" style="color: var(--accent-neon);"></i> Frame Width</label>
+              <div class="slider-container">
+                <input type="range" id="slider-reticle-w" min="60" max="1920" step="10" value="480">
+                <span class="slider-val" id="val-reticle-w">480px</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label><i class="fa-solid fa-arrows-up-down" style="color: var(--accent-neon);"></i> Frame Height</label>
+              <div class="slider-container">
+                <input type="range" id="slider-reticle-h" min="60" max="1080" step="10" value="270">
+                <span class="slider-val" id="val-reticle-h">270px</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label><i class="fa-solid fa-up-right-and-down-left-from-center" style="color: var(--accent-lime);"></i> Quick Framing</label>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px;">
+                <button class="btn btn-secondary btn-sm" id="btn-reticle-16-9" type="button" style="font-size: 10.5px; padding: 4px 8px;" title="Standard 16:9 stream camera frame"><i class="fa-solid fa-video"></i> 16:9 Frame</button>
+                <button class="btn btn-secondary btn-sm" id="btn-reticle-full-box" type="button" style="font-size: 10.5px; padding: 4px 8px;" title="Expand frame to select full streamer camera window"><i class="fa-solid fa-expand"></i> Whole Cam</button>
+                <button class="btn btn-secondary btn-sm" id="btn-reticle-reset-box" type="button" style="font-size: 10.5px; padding: 4px 8px;" title="Reset reticle frame to center standard"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Reticle Crop Canvas: True 16:9 Stream Frame Window -->
+          <div style="background: rgba(0,0,0,0.4); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+              <span style="font-size: 11.5px; font-weight: 700; color: var(--accent-cyan); display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-video"></i> Original 16:9 Stream Frame (Facecam Reticle)
+              </span>
+              <div style="display: flex; gap: 6px; align-items: center;">
+                <button class="btn btn-secondary btn-sm" id="btn-grab-video-frame" type="button" style="padding: 3px 8px; font-size: 10.5px; color: var(--accent-neon);" title="Capture current frame from video player"><i class="fa-solid fa-camera"></i> Grab Player Frame</button>
+                <button class="btn btn-secondary btn-sm" id="btn-reset-cam-zoom" type="button" style="padding: 3px 8px; font-size: 10.5px;" title="Reset reticle box"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+              </div>
+            </div>
+            <!-- Responsive 16:9 Widescreen Container: Displays full horizontal stream with zero vertical letterbox -->
+            <div style="position: relative; width: 100%; aspect-ratio: 16/9; background: #09090b; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(0, 245, 255, 0.25); box-shadow: inset 0 0 16px rgba(0,0,0,0.85);">
+              <canvas id="webcam-crop-canvas" style="width: 100%; height: 100%; object-fit: contain; cursor: crosshair; display: block;"></canvas>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 10.5px; color: var(--text-secondary);">
+              <span id="cam-coords-badge"><i class="fa-solid fa-crosshairs" style="color: var(--accent-lime);"></i> Click & drag over streamer face</span>
+              <span id="cam-zoom-badge" style="color: var(--accent-lime); font-weight: 700;">1.0x</span>
+            </div>
+
+            <!-- Arrow Nudge Adjustment Pad for Facecam Reticle -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; background: rgba(255,255,255,0.02); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+              <span style="font-size: 11px; color: var(--text-secondary); font-weight: 600;">
+                <i class="fa-solid fa-arrows-up-down-left-right" style="color: var(--accent-lime);"></i> Reticle Position Nudge:
+              </span>
+              <div style="display: flex; gap: 4px; align-items: center;">
+                <button class="btn btn-secondary btn-sm" id="btn-cam-nudge-left" type="button" style="padding: 4px 8px;" title="Nudge Left (←)"><i class="fa-solid fa-arrow-left"></i></button>
+                <button class="btn btn-secondary btn-sm" id="btn-cam-nudge-up" type="button" style="padding: 4px 8px;" title="Nudge Up (↑)"><i class="fa-solid fa-arrow-up"></i></button>
+                <button class="btn btn-secondary btn-sm" id="btn-cam-nudge-down" type="button" style="padding: 4px 8px;" title="Nudge Down (↓)"><i class="fa-solid fa-arrow-down"></i></button>
+                <button class="btn btn-secondary btn-sm" id="btn-cam-nudge-right" type="button" style="padding: 4px 8px;" title="Nudge Right (→)"><i class="fa-solid fa-arrow-right"></i></button>
+                <button class="btn btn-secondary btn-sm" id="btn-cam-nudge-center" type="button" style="padding: 4px 8px; font-size: 10px;" title="Center Reticle">Center</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gameplay Window Card -->
+        <div class="card">
+          <div class="card-title">
+            <span><i class="fa-solid fa-gamepad"></i> Centered Gameplay Action</span>
+            <span class="badge" id="gp-size-badge">1080 × 700 (Viral Reference)</span>
+          </div>
+
+          <!-- Gameplay Zoom & 2D Framing (X / Y Axis) Hub -->
+          <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 11.5px; font-weight: 700; color: #FFFFFF; display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-magnifying-glass-plus" style="color: var(--accent-lime);"></i> Gameplay Zoom &amp; X / Y Framing
+              </span>
+              <button class="btn btn-secondary btn-sm" id="btn-reset-gp-pan" type="button" style="padding: 2px 8px; font-size: 10px; color: var(--accent-cyan);">
+                Reset (0, 0)
+              </button>
+            </div>
+
+            <!-- Quick Zoom Buttons -->
+            <div style="margin-bottom: 10px;">
+              <label style="font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;">Quick Zoom Presets</label>
+              <div class="preset-pills" id="gp-zoom-presets" style="margin-top: 4px;">
+                <button class="preset-pill" type="button" data-zoom="1.0">1.0x (Fit)</button>
+                <button class="preset-pill active" type="button" data-zoom="1.15">1.15x (Wide)</button>
+                <button class="preset-pill" type="button" data-zoom="1.3">1.30x (Focus)</button>
+                <button class="preset-pill" type="button" data-zoom="1.5">1.50x (Close-Up)</button>
+                <button class="preset-pill" type="button" data-zoom="1.8">1.80x (Action)</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Zoom Multiplier</label>
+                <div class="slider-container">
+                  <input type="range" id="slider-gp-zoom" min="1.0" max="2.5" step="0.05" value="1.15">
+                  <span class="slider-val" id="val-gp-zoom">1.15x</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- X Axis Slider & Nudge -->
+            <div class="form-group" style="margin-top: 6px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+                <label style="margin: 0;">↔ Horizontal Axis (X Pan: Left / Right)</label>
+                <span id="val-gp-pan-x" style="font-size: 11px; font-family: var(--font-mono); color: var(--accent-lime); font-weight: 700;">0%</span>
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <button class="btn btn-secondary btn-sm" id="btn-gp-pan-left" type="button" title="Pan Left" style="padding: 4px 8px;"><i class="fa-solid fa-chevron-left"></i></button>
+                <input type="range" id="slider-gp-pan-x" min="-100" max="100" step="1" value="0" style="flex: 1;">
+                <button class="btn btn-secondary btn-sm" id="btn-gp-pan-right" type="button" title="Pan Right" style="padding: 4px 8px;"><i class="fa-solid fa-chevron-right"></i></button>
+              </div>
+            </div>
+
+            <!-- Y Axis Slider & Nudge -->
+            <div class="form-group" style="margin-top: 8px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+                <label style="margin: 0;">↕ Vertical Axis (Y Pan: Up / Down)</label>
+                <span id="val-gp-pan-y" style="font-size: 11px; font-family: var(--font-mono); color: var(--accent-lime); font-weight: 700;">0%</span>
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <button class="btn btn-secondary btn-sm" id="btn-gp-pan-up" type="button" title="Pan Up" style="padding: 4px 8px;"><i class="fa-solid fa-chevron-up"></i></button>
+                <input type="range" id="slider-gp-pan-y" min="-100" max="100" step="1" value="0" style="flex: 1;">
+                <button class="btn btn-secondary btn-sm" id="btn-gp-pan-down" type="button" title="Pan Down" style="padding: 4px 8px;"><i class="fa-solid fa-chevron-down"></i></button>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Card Width</label>
+              <div class="slider-container">
+                <input type="range" id="slider-gp-w" min="600" max="1080" step="10" value="1080">
+                <span class="slider-val" id="val-gp-w">1080px</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Card Height</label>
+              <div class="slider-container">
+                <input type="range" id="slider-gp-h" min="350" max="1080" step="10" value="700">
+                <span class="slider-val" id="val-gp-h">700px</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Template Preset Buttons -->
+          <div style="margin-bottom: 10px;">
+            <label style="font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;">Quick Template Split Presets</label>
+            <div class="preset-pills" id="template-split-presets" style="margin-top: 4px;">
+              <button class="preset-pill active" type="button" id="btn-preset-split-700" data-gph="700" title="Viral Speed Reference: 700px Facecam + 700px Gameplay = 1400px Active Video">
+                🔥 1080 × 700 (Speed Viral 1400px)
+              </button>
+              <button class="preset-pill" type="button" id="btn-preset-split-960" data-gph="960" title="Full 50/50 Split without Letterboxing: 960px + 960px">
+                ⚡ 1080 × 960 (Full 50/50 Split)
+              </button>
+              <button class="preset-pill" type="button" id="btn-preset-split-560" data-gph="560" title="Compact 560px Layout">
+                📐 1080 × 560 (Compact)
+              </button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Vertical Position (Y)</label>
+              <div class="slider-container">
+                <input type="range" id="slider-gp-y" min="0" max="1200" step="10" value="960">
+                <span class="slider-val" id="val-gp-y">960px</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: Subtitles -->
+      <div class="tab-content" id="tab-subtitles">
+        <div class="card">
+          <div class="card-title">
+            <span><i class="fa-solid fa-closed-captioning" style="color: var(--accent-lime);"></i> Smooth Captions (Reference Style)</span>
+            <span class="badge badge-active">NO BOUNCE • SMOOTH HIGHLIGHT</span>
+          </div>
+
+          <!-- Style Preset Selection -->
+          <div class="form-group">
+            <label>Caption Style Preset</label>
+            <div class="preset-pills">
+              <button class="preset-pill active" data-style="speed">
+                <i class="fa-solid fa-bolt" style="color: var(--accent-lime);"></i> ⚡ Speed Viral (White / Neon Lime)
+              </button>
+              <button class="preset-pill" data-style="hormozi">
+                <i class="fa-solid fa-fire" style="color: #FFDE00;"></i> Hormozi Viral (Gold)
+              </button>
+              <button class="preset-pill" data-style="mrbeast">
+                <i class="fa-solid fa-crown" style="color: #00FF66;"></i> MrBeast (Yellow/Lime)
+              </button>
+              <button class="preset-pill" data-style="neon">
+                <i class="fa-solid fa-sun" style="color: #00F2FE;"></i> Neon Cyber Glow
+              </button>
+              <button class="preset-pill" data-style="clean">
+                <i class="fa-solid fa-font"></i> Minimal Clean
+              </button>
+            </div>
+          </div>
+
+          <!-- Positioning -->
+          <div class="form-row">
+            <div class="form-group">
+              <label>Horizontal Position (X)</label>
+              <div class="slider-container">
+                <input type="range" id="slider-sub-x" min="5" max="95" value="50">
+                <span class="slider-val" id="val-sub-x">50%</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Vertical Position (Y)</label>
+              <div class="slider-container">
+                <input type="range" id="slider-sub-y" min="5" max="95" value="50">
+                <span class="slider-val" id="val-sub-y">50%</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Font Size</label>
+              <div class="slider-container">
+                <input type="range" id="slider-font-size" min="32" max="96" value="62">
+                <span class="slider-val" id="val-font-size">62px</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Font Family</label>
+              <select id="select-font">
+                <option value="Impact" selected>Impact (Reference Punchy)</option>
+                <option value="Arial Black">Arial Black</option>
+                <option value="Montserrat">Montserrat Black</option>
+                <option value="Segoe UI">Segoe UI Bold</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Color Customization -->
+          <div class="form-row">
+            <div class="form-group">
+              <label>Primary Text</label>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <input type="color" id="color-sub-primary" value="#FFFFFF">
+                <span style="font-size: 11px; font-family: var(--font-mono);" id="hex-sub-primary">#FFFFFF</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Active Highlight</label>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <input type="color" id="color-sub-highlight" value="#CCFF00">
+                <span style="font-size: 11px; font-family: var(--font-mono);" id="hex-sub-highlight">#CCFF00</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Stroke Color</label>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <input type="color" id="color-sub-outline" value="#000000">
+                <span style="font-size: 11px; font-family: var(--font-mono);" id="hex-sub-outline">#000000</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Stroke Width</label>
+              <div class="slider-container">
+                <input type="range" id="slider-sub-stroke" min="0" max="10" value="8">
+                <span class="slider-val" id="val-sub-stroke">8px</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Words at a time -->
+          <div class="form-group" style="margin-top: 4px;">
+            <label>Words Shown at a Time</label>
+            <div class="preset-pills">
+              <button class="preset-pill" type="button" data-words="1">1 Word</button>
+              <button class="preset-pill" type="button" data-words="2">2 Words</button>
+              <button class="preset-pill active" type="button" data-words="3">3 Words (Reference)</button>
+              <button class="preset-pill" type="button" data-words="4">4 Words</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 11px; color: #FFFFFF; font-weight: 600;">
+                <input type="checkbox" id="check-uppercase" checked style="accent-color: var(--accent-lime);">
+                ALL CAPS (Uppercase Text)
+              </label>
+            </div>
+          </div>
+
+          <!-- Subtitle Sync Timing Calibration -->
+          <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span style="font-size: 11px; font-weight: 700; color: var(--accent-cyan);">
+                <i class="fa-solid fa-stopwatch"></i> Subtitle Audio Sync Nudge (ms)
+              </span>
+              <span class="badge" id="val-sync-offset" style="font-family: var(--font-mono);">0 ms (Exact Onset)</span>
+            </div>
+            <input type="range" id="slider-sync-offset" min="-400" max="400" step="20" value="0">
+          </div>
+
+          <!-- Speech Recognition Language & Model Row -->
+          <div class="form-row" style="margin-top: 10px;">
+            <div class="form-group" style="flex: 1;">
+              <label><i class="fa-solid fa-language" style="color: var(--accent-cyan);"></i> Spoken Language</label>
+              <select id="select-lang">
+                <option value="auto" selected>Auto Detect</option>
+                <option value="en">English (US/UK/AU)</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="pt">Portuguese</option>
+                <option value="hi">Hindi</option>
+                <option value="ja">Japanese</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex: 1;">
+              <label><i class="fa-solid fa-microchip" style="color: var(--accent-neon);"></i> Whisper AI Model</label>
+              <select id="select-whisper-model">
+                <option value="base.en" selected>Whisper Base.en (Fast & Balanced)</option>
+                <option value="tiny.en">Whisper Tiny.en (Ultra-Fast 0.3s)</option>
+                <option value="small.en">Whisper Small.en (High Acoustic Precision)</option>
+                <option value="medium.en">Whisper Medium (Studio Accuracy)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Transcribe Actions -->
+          <div style="display: flex; gap: 8px; margin-top: 12px;">
+            <button class="btn btn-primary" id="btn-transcribe-current" style="flex: 1;">
+              <i class="fa-solid fa-microphone-lines"></i> Transcribe Active Clip
+            </button>
+            <button class="btn btn-secondary" id="btn-transcribe-all" style="flex: 1;">
+              <i class="fa-solid fa-list-check"></i> Transcribe All Clips
+            </button>
+          </div>
+
+          <!-- Transcribe Progress Feedback Box -->
+          <div id="transcribe-progress-box" style="display: none; margin-top: 10px; background: rgba(0,0,0,0.5); padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span id="transcribe-status-text" style="font-size: 11px; font-weight: 600; color: #fff;">Transcribing...</span>
+              <span id="transcribe-percent-text" style="font-size: 11px; font-weight: 700; color: var(--accent-lime); font-family: var(--font-mono);">0%</span>
+            </div>
+            <div style="height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
+              <div id="transcribe-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-lime), var(--accent-neon)); transition: width 0.2s ease;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: Upscale & 4K AI -->
+      <div class="tab-content" id="tab-enhance">
+        <div class="card">
+          <div class="card-title">
+            <span><i class="fa-solid fa-wand-magic-sparkles" style="color: var(--accent-cyan);"></i> Topaz AI Detail Synthesis</span>
+            <span class="badge badge-cyan">Ultra 4K Active</span>
+          </div>
+
+          <div class="form-group">
+            <label>Pixel Generator Mode</label>
+            <div class="preset-pills" id="pills-pixel-gen">
+              <button class="preset-pill active" type="button" data-mode="ultra" id="btn-pgen-ultra">⚡ Ultra 4K Detail</button>
+              <button class="preset-pill" type="button" data-mode="balanced" id="btn-pgen-balanced">💎 Balanced HD</button>
+              <button class="preset-pill" type="button" data-mode="film" id="btn-pgen-film">🎬 Cinematic</button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Micro-Texture</label>
+              <div class="slider-container">
+                <input type="range" id="slider-micro-texture" min="0.0" max="1.0" step="0.05" value="0.40">
+                <span class="slider-val" id="val-micro-texture">0.40x</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Sharpness</label>
+              <div class="slider-container">
+                <input type="range" id="slider-sharpness" min="0.0" max="1.5" step="0.05" value="0.50">
+                <span class="slider-val" id="val-sharpness">0.50x</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 5: Export -->
+      <div class="tab-content" id="tab-export">
+        <div class="card">
+          <div class="card-title">
+            <span><i class="fa-solid fa-download" style="color: var(--accent-lime);"></i> Render & Export Shorts</span>
+            <span class="badge badge-active">Ready</span>
+          </div>
+
+          <!-- Export Encoding & Resolution Controls -->
+          <div class="form-row" style="margin-bottom: 12px;">
+            <div class="form-group" style="flex: 1.2;">
+              <label>Hardware Acceleration</label>
+              <select id="select-export-encoder">
+                <option value="auto" selected>⚡ Auto-Detect GPU (Recommended)</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex: 1.2;">
+              <label>Resolution</label>
+              <select id="select-export-res">
+                <option value="1080x1920" selected>1080 × 1920 (Full HD 60fps)</option>
+                <option value="2160x3840">2160 × 3840 (Topaz 4K Ultra Master)</option>
+                <option value="1440x2560">1440 × 2560 (2K QHD Crisp)</option>
+                <option value="720x1280">720 × 1280 (Fast 720p)</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex: 1.2;">
+              <label>Quality & Bitrate</label>
+              <select id="select-export-bitrate">
+                <option value="35M" selected>🔥 35 Mbps (Topaz Studio Master)</option>
+                <option value="25M">⚡ 25 Mbps (High Action 60fps)</option>
+                <option value="16M">✨ 16 Mbps (Standard HD)</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <button class="btn btn-lime" id="btn-export-clip" style="flex: 1; padding: 12px;">
+              <i class="fa-solid fa-play"></i> Export Active Clip
+            </button>
+            <button class="btn btn-primary" id="btn-export-all" style="flex: 1; padding: 12px;">
+              <i class="fa-solid fa-bolt"></i> Export All Clips
+            </button>
+          </div>
+
+          <!-- Export Progress -->
+          <div id="export-progress-box" style="display: none; background: rgba(0,0,0,0.5); padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 11px;">
+              <span id="export-status-text" style="color: var(--accent-lime);">Rendering Shorts...</span>
+              <span id="export-percent-text" style="font-weight: 700; color: #fff;">0%</span>
+            </div>
+            <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+              <div id="export-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-lime), var(--accent-cyan)); transition: width 0.2s ease;"></div>
+            </div>
+          </div>
+
+          <!-- Completed Outputs -->
+          <div style="margin-top: 10px;">
+            <label style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; margin-bottom: 6px; display: block;">
+              Completed Exports
+            </label>
+            <div id="outputs-grid" style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto;">
+              <!-- Outputs injected dynamically -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Right Column: Interactive Phone Monitor -->
+    <section class="preview-panel">
+      
+      <!-- Titanium Phone Mockup (540x960 9:16 Canvas) -->
+      <div class="phone-mockup">
+        <!-- Dynamic Notch -->
+        <div class="phone-notch">
+          <div class="camera-lens"></div>
+        </div>
+
+        <!-- Canvas Screen -->
+        <div id="phone-screen">
+          <canvas id="preview-canvas" width="540" height="960" style="display: none;"></canvas>
+          <img id="preview-img" alt="Preview frame" style="display: block;">
+          <video id="preview-source-video" playsinline muted style="position: absolute; opacity: 0.001; pointer-events: none; width: 1px; height: 1px; z-index: -10;"></video>
+          <div id="preview-loading" style="position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(7, 9, 14, 0.7); z-index: 15;">
+            <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 28px; color: var(--accent-lime);"></i>
+          </div>
+
+          <!-- Interactive Drag Reticle with Corner Resize Handles -->
+          <div id="drag-cam-handle" style="width: 150px; height: 150px; top: 120px; left: 115px;">
+            <!-- Floating Quick-Size Controls Attached to Reticle -->
+            <div class="reticle-size-pill" id="reticle-size-badge" title="Drag corners or scroll mouse wheel over reticle to resize">
+              <button class="reticle-size-btn" id="btn-cam-size-dec" type="button" title="Shrink facecam size">−</button>
+              <span id="reticle-size-text">300px</span>
+              <button class="reticle-size-btn" id="btn-cam-size-inc" type="button" title="Enlarge facecam size">+</button>
+            </div>
+
+            <!-- Directional Arrow Nudge Buttons on Reticle -->
+            <div class="reticle-arrows-overlay" id="reticle-arrows" title="Click arrows or use keyboard arrow keys to nudge">
+              <button class="reticle-nudge-btn nudge-top" id="btn-reticle-up" type="button" title="Nudge Up (↑)"><i class="fa-solid fa-chevron-up"></i></button>
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <button class="reticle-nudge-btn nudge-left" id="btn-reticle-left" type="button" title="Nudge Left (←)"><i class="fa-solid fa-chevron-left"></i></button>
+                <button class="reticle-nudge-btn nudge-mid" id="btn-reticle-center" type="button" title="Center (⌖)"><i class="fa-solid fa-crosshairs"></i></button>
+                <button class="reticle-nudge-btn nudge-right" id="btn-reticle-right" type="button" title="Nudge Right (→)"><i class="fa-solid fa-chevron-right"></i></button>
+              </div>
+              <button class="reticle-nudge-btn nudge-bottom" id="btn-reticle-down" type="button" title="Nudge Down (↓)"><i class="fa-solid fa-chevron-down"></i></button>
+            </div>
+            
+            <!-- 4 Corner Interactive Resize Handles -->
+            <div class="cam-resize-handle handle-tl" data-corner="tl" title="Drag to resize"></div>
+            <div class="cam-resize-handle handle-tr" data-corner="tr" title="Drag to resize"></div>
+            <div class="cam-resize-handle handle-br" data-corner="br" title="Drag to resize"></div>
+            <div class="cam-resize-handle handle-bl" data-corner="bl" title="Drag to resize"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Minimalist Player Transport -->
+      <div class="player-controls">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <input type="range" id="slider-player-time" min="0" max="30" step="0.05" value="0">
+        </div>
+        <div class="transport-buttons">
+          <div class="transport-left">
+            <button class="btn btn-secondary btn-sm" id="btn-play-toggle">
+              <i class="fa-solid fa-play" id="icon-play-btn"></i> <span id="label-play-btn">Play Preview</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-loop-preview" title="Loop Preview">
+              <i class="fa-solid fa-repeat"></i>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-audio-preview" title="Toggle Audio (Mute / Unmute)">
+              <i class="fa-solid fa-volume-high" id="icon-audio-btn"></i>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-refresh-preview" title="Refresh Live Preview Frame">
+              <i class="fa-solid fa-arrows-rotate"></i>
+            </button>
+          </div>
+          <div class="timecode-display">
+            <span id="player-cur-time">0.0s</span> / <span id="player-total-time">0.0s</span>
+            <span id="player-status-hint" style="display: none; font-size: 10px; color: var(--text-muted); margin-left: 6px;"></span>
+          </div>
+        </div>
+        <div style="display: none;">
+          <!-- Hidden fallback scrubber to maintain legacy listener binding -->
+          <input type="range" id="slider-preview-time" min="0" max="60" step="0.5" value="10">
+          <span id="val-preview-time">10.0s</span>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- Rendered Video Player Modal -->
+  <div id="video-modal" class="modal-backdrop" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h4 id="modal-title" style="margin: 0; font-size: 13px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-circle-play" style="color: var(--accent-lime);"></i> Rendered Short
+        </h4>
+        <button id="modal-close" class="modal-close-btn" type="button" title="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <video id="modal-video" controls playsinline></video>
+      </div>
+      <div class="modal-footer">
+        <span style="font-size: 11px; color: var(--accent-lime); font-family: var(--font-mono); font-weight: 700; display: flex; align-items: center; gap: 6px;">
+          <i class="fa-solid fa-circle-check"></i> 1080&times;1920 HD Ready
+        </span>
+        <div style="display: flex; gap: 8px;">
+          <a id="modal-download" href="#" download class="btn btn-lime btn-sm" style="display: inline-flex; align-items: center; gap: 6px;">
+            <i class="fa-solid fa-download"></i> Download Short
+          </a>
+          <button class="btn btn-secondary btn-sm" type="button" onclick="closeModal()">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global Toasts -->
+  <div id="toast-container"></div>
+
+  <!-- Scripts -->
+  <script src="/static/app.js?v=2.6"></script>
+</body>
+</html>

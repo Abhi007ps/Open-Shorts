@@ -1,0 +1,68 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets
+.env
+.env.*
+cookies.txt
+storage/cookies.txt
+storage/temp/cookies.txt
+
+# Binary executables & tools (exceed GitHub 100MB limit without LFS)
+bin/*.exe
+bin/*.zip
+bin/*.dll
+bin/Release/
+tools/*.exe
+!bin/.gitkeep
+!tools/.gitkeep
+
+# Heavy AI model weights (downloaded on demand or via bootstrap)
+models/*.bin
+models/*.pt
+models/*.onnx
+!models/.gitkeep
+
+# User Video Data & Media Storage
+storage/uploads/*
+!storage/uploads/.gitkeep
+
+storage/outputs/*
+!storage/outputs/.gitkeep
+
+storage/temp/*
+!storage/temp/.gitkeep
+
+storage/thumbnails/*
+!storage/thumbnails/.gitkeep
+
+storage/exports/*
+!storage/exports/.gitkeep
+
+storage/custom_export/*
+!storage/custom_export/.gitkeep
+
+# Session state & temporary runtime logs
+storage/temp/session_state.json
+*.log
+*.bak
+*.tmp
+*.fast.mp4
+scratch/
+inspect/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini

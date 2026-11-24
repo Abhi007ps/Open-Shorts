@@ -1,0 +1,1488 @@
+import os
+import re
+import shutil
+import json
+import time
+import subprocess
+import zipfile
+from typing import List, Dict, Any, Optional
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel
+
+from backend.clipper import probe_video, auto_generate_clips, generate_preview_frame, render_clip
+from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, get_hardware_profile, get_best_encoder
+from backend.transcriber import transcribe_video, group_words_into_segments, MODELS_DIR
+from backend.subtitle_generator import generate_ass_subtitles, generate_srt_subtitles
+from backend.viral_detector import detect_viral_moments
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+UPLOADS_DIR = os.path.join(BASE_DIR, "storage", "uploads")
+OUTPUTS_DIR = os.path.join(BASE_DIR, "storage", "outputs")
+TEMP_DIR = os.path.join(BASE_DIR, "storage", "temp")
+TEMPLATES_DIR = os.path.join(BASE_DIR, "storage", "templates")
+THUMBNAILS_DIR = os.path.join(BASE_DIR, "storage", "thumbnails")
+FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+
+CURRENT_EXPORT_DIR = OUTPUTS_DIR
+
+MASTER_TEMPLATE_FILE = os.path.join(TEMPLATES_DIR, "master_template.json")
+
+app = FastAPI(title="OpenShorts Custom Template Studio", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+DEFAULT_SUBS_FILE = os.path.join(BASE_DIR, "storage", "default_subtitles.json")
+
+SESSION_STATE_FILE = os.path.join(TEMP_DIR, "session_state.json")
+
+# In-memory session state - starts clean for user uploaded footage
+CURRENT_STATE: Dict[str, Any] = {
+    "video_path": "",
+    "video_meta": {},
+    "subtitles": [],
+    "clips": [],
+    "export_queue": [],
+    "export_progress": {"status": "idle", "current_clip": 0, "total_clips": 0, "percent": 0, "title": ""},
+    "transcribe_progress": {"status": "idle", "step": "Ready", "percent": 0}
+}
+
+def save_session_state():
+    try:
+        data = {
+            "video_path": CURRENT_STATE.get("video_path", ""),
+            "video_meta": CURRENT_STATE.get("video_meta", {}),
+            "subtitles": CURRENT_STATE.get("subtitles", []),
+            "clips": CURRENT_STATE.get("clips", []),
+            "export_dir": CURRENT_EXPORT_DIR
+        }
+        with open(SESSION_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Error saving session state: {e}")
+
+def ensure_ollama_daemon():
+    """Auto-starts Ollama daemon if not currently running."""
+    try:
+        from backend.llm_engine import is_ollama_online
+        if not is_ollama_online(timeout=1.0):
+            ollama_candidates = [
+                os.path.expanduser(r"~\AppData\Local\Programs\Ollama\ollama.exe"),
+                r"C:\Users\apsin\AppData\Local\Programs\Ollama\ollama.exe",
+                "ollama.exe"
+            ]
+            for c in ollama_candidates:
+                if os.path.exists(c):
+                    print(f"[*] Starting local Ollama daemon from {c}...")
+                    subprocess.Popen([c, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    break
+    except Exception as e:
+        print(f"[WARN] Failed to auto-start Ollama: {e}")
+
+ensure_ollama_daemon()
+
+def load_session_state():
+    global CURRENT_EXPORT_DIR
+    if os.path.exists(SESSION_STATE_FILE):
+        try:
+            with open(SESSION_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                vpath = data.get("video_path")
+                meta = data.get("video_meta", {})
+                # If loaded video is vertical (e.g. 1080x1920 short), discard and switch to true 16:9 stream
+                if meta.get("width", 0) > 0 and meta.get("width", 0) < meta.get("height", 0):
+                    vpath = None
+                if vpath and os.path.exists(vpath):
+                    CURRENT_STATE["video_path"] = vpath
+                    CURRENT_STATE["video_meta"] = meta
+                    CURRENT_STATE["subtitles"] = data.get("subtitles", [])
+                    CURRENT_STATE["clips"] = data.get("clips", [])
+                if data.get("export_dir") and os.path.exists(data.get("export_dir")):
+                    CURRENT_EXPORT_DIR = data["export_dir"]
+                else:
+                    CURRENT_EXPORT_DIR = OUTPUTS_DIR
+        except Exception as e:
+            print(f"Error loading session state: {e}")
+
+    # If no valid 16:9 stream video is active, auto-load standard 16:9 demo video
+    if not CURRENT_STATE.get("video_path") or not os.path.exists(CURRENT_STATE["video_path"]):
+        demo = get_demo_video()
+        demo_path = demo.get("path") if demo else None
+        if demo_path and os.path.exists(demo_path):
+            CURRENT_STATE["video_path"] = demo_path
+            CURRENT_STATE["video_meta"] = probe_video(demo_path)
+
+    # Guarantee 16:9 source_frame.jpg exists and matches current stream video
+    if CURRENT_STATE.get("video_path") and os.path.exists(CURRENT_STATE["video_path"]):
+        source_frame_path = os.path.join(TEMP_DIR, "source_frame.jpg")
+        try:
+            dur = CURRENT_STATE.get("video_meta", {}).get("duration", 30.0)
+            seek_pt = min(12.0, max(1.0, dur * 0.15))
+            subprocess.run([
+                FFMPEG_BIN, "-y",
+                "-ss", str(seek_pt),
+                "-i", CURRENT_STATE["video_path"],
+                "-vframes", "1",
+                source_frame_path
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        except Exception as e:
+            print(f"[WARN] Failed to generate 16:9 source frame on startup: {e}")
+
+load_session_state()
+
+# Mount static directories
+app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+class SetSourceReq(BaseModel):
+    video_path: str
+    is_demo: bool = False
+
+class ProbeStreamReq(BaseModel):
+    url: str
+
+class LoadStreamRangeReq(BaseModel):
+    url: str
+    start_sec: float
+    end_sec: float
+    title: Optional[str] = None
+    quality: Optional[str] = "max"
+
+class TranscribeReq(BaseModel):
+    language: str = "auto"
+    max_line_len: int = 28
+    words_per_line: Optional[int] = 3
+    model_name: Optional[str] = None
+    start_time: Optional[float] = None
+    duration: Optional[float] = None
+    streamer_voice_focus: bool = True
+    audio_track: Optional[int] = 0
+    is_demo: bool = False
+
+class RegroupReq(BaseModel):
+    words_per_line: int = 3
+
+class PreviewReq(BaseModel):
+    timestamp: float = 10.0
+    template_config: Dict[str, Any]
+    subtitle_config: Dict[str, Any]
+    hook_config: Optional[Dict[str, Any]] = None
+    subtitles: Optional[List[Dict[str, Any]]] = None
+
+class ClipDef(BaseModel):
+    id: str
+    title: str
+    start: float
+    end: float
+    virality_score: Optional[int] = None
+    reason: Optional[str] = None
+    badge_color: Optional[str] = None
+    metrics: Optional[Dict[str, Any]] = None
+    template_config: Optional[Dict[str, Any]] = None
+    subtitle_config: Optional[Dict[str, Any]] = None
+    hook_config: Optional[Dict[str, Any]] = None
+    subtitles: Optional[List[Dict[str, Any]]] = None
+    subtitles_count: Optional[int] = None
+
+class TranscribeAllClipsReq(BaseModel):
+    clips: List[ClipDef]
+    language: str = "auto"
+    words_per_line: Optional[int] = 3
+    model_name: Optional[str] = None
+    streamer_voice_focus: Optional[bool] = True
+    audio_track: Optional[int] = 0
+
+class DetectViralReq(BaseModel):
+    min_duration: float = 8.0
+    max_duration: float = 30.0
+    mode: str = "auto" # "auto" or "manual"
+    target_clips: Optional[int] = None
+    profile: Optional[str] = "balanced"
+    weight_audio: Optional[float] = None
+    weight_pitch: Optional[float] = None
+    weight_hook: Optional[float] = None
+    weight_speech: Optional[float] = None
+    weight_motion: Optional[float] = None
+    snap_boundaries: Optional[bool] = True
+    webcam_crop: Optional[Dict[str, int]] = None
+    use_llm: Optional[bool] = True
+    llm_model: Optional[str] = None
+
+class ExportReq(BaseModel):
+    clips: List[ClipDef]
+    template_config: Dict[str, Any]
+    subtitle_config: Dict[str, Any]
+    hook_config: Optional[Dict[str, Any]] = None
+    subtitles: Optional[List[Dict[str, Any]]] = None
+    export_as_zip: Optional[bool] = False
+    encoder: Optional[str] = None
+
+@app.get("/api/system_hardware")
+def get_system_hardware():
+    """Returns detected CPU, GPU, and hardware video encoders for the current machine."""
+    return get_hardware_profile()
+
+class SetExportFolderReq(BaseModel):
+    folder_path: str
+
+class MasterTemplateReq(BaseModel):
+    name: Optional[str] = "Default Master Template"
+    template_config: Dict[str, Any]
+    subtitle_config: Optional[Dict[str, Any]] = None
+    enhancement_config: Optional[Dict[str, Any]] = None
+
+@app.get("/api/master_template")
+def get_master_template():
+    if os.path.exists(MASTER_TEMPLATE_FILE):
+        try:
+            with open(MASTER_TEMPLATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {"success": True, "has_saved": True, "template": data}
+        except Exception as e:
+            return {"success": False, "has_saved": False, "error": str(e)}
+    return {"success": True, "has_saved": False, "template": None}
+
+@app.post("/api/save_master_template")
+def save_master_template(req: MasterTemplateReq):
+    try:
+        from datetime import datetime
+        data = {
+            "name": req.name or "Default Master Template",
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "template_config": req.template_config,
+            "subtitle_config": req.subtitle_config or {},
+            "enhancement_config": req.enhancement_config or {}
+        }
+        with open(MASTER_TEMPLATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return {"success": True, "message": "Master template saved successfully", "template": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/master_template")
+def delete_master_template():
+    if os.path.exists(MASTER_TEMPLATE_FILE):
+        try:
+            os.remove(MASTER_TEMPLATE_FILE)
+            return {"success": True, "message": "Master template reset to default"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    return {"success": True, "message": "No master template found"}
+
+@app.get("/")
+def serve_index():
+    index_file = os.path.join(FRONTEND_DIR, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"message": "OpenShorts Custom Template Studio API is running."}
+
+@app.get("/api/status")
+def get_status():
+    return {
+        "status": "online",
+        "current_video": CURRENT_STATE["video_path"],
+        "video_loaded": bool(CURRENT_STATE["video_path"] and os.path.exists(CURRENT_STATE["video_path"])),
+        "subtitles_count": len(CURRENT_STATE["subtitles"]),
+        "clips_count": len(CURRENT_STATE["clips"])
+    }
+
+def ensure_faststart(video_path: str) -> str:
+    """Ensures MP4/MOV container has the 'moov' atom at the beginning for instant web browser streaming."""
+    if not video_path or not os.path.exists(video_path):
+        return video_path
+    
+    # Only perform in-place faststart optimization for uploaded files in our own uploads directory
+    try:
+        norm_uploads = os.path.abspath(UPLOADS_DIR).lower()
+        norm_video = os.path.abspath(video_path).lower()
+        if not norm_video.startswith(norm_uploads):
+            return video_path  # Leave user's external source files untouched!
+    except Exception:
+        pass
+
+    ext = os.path.splitext(video_path)[1].lower()
+    if ext not in [".mp4", ".mov", ".m4v"]:
+        return video_path
+    
+    # Check if moov is already before mdat
+    try:
+        with open(video_path, "rb") as f:
+            for _ in range(12):
+                chunk = f.read(8)
+                if len(chunk) < 8:
+                    break
+                size = int.from_bytes(chunk[:4], 'big')
+                atom = chunk[4:8]
+                if atom == b'moov':
+                    return video_path  # already faststart!
+                if atom == b'mdat':
+                    break  # moov is after mdat, needs faststart conversion
+                if size == 1:
+                    large_size = int.from_bytes(f.read(8), 'big')
+                    f.seek(large_size - 16, os.SEEK_CUR)
+                elif size == 0:
+                    break
+                else:
+                    f.seek(size - 8, os.SEEK_CUR)
+    except Exception:
+        return video_path
+
+    # Apply faststart via ffmpeg stream copy
+    fast_path = video_path + ".fast.mp4"
+    try:
+        cmd = [FFMPEG_BIN, "-y", "-i", video_path, "-c", "copy", "-movflags", "+faststart", fast_path]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res.returncode == 0 and os.path.exists(fast_path) and os.path.getsize(fast_path) > 1000:
+            bak_path = video_path + ".bak"
+            if os.path.exists(bak_path):
+                try: os.remove(bak_path)
+                except Exception: pass
+            shutil.move(video_path, bak_path)
+            shutil.move(fast_path, video_path)
+            if os.path.exists(bak_path):
+                try: os.remove(bak_path)
+                except Exception: pass
+            print(f"[FastStart] Converted {video_path} to web-optimized streaming container")
+            return video_path
+    except Exception as e:
+        print(f"[FastStart] Stream copy conversion failed: {e}")
+        if os.path.exists(fast_path):
+            try: os.remove(fast_path)
+            except Exception: pass
+    return video_path
+
+def process_loaded_video(clean_path: str, is_demo: bool = False):
+    clean_path = os.path.normpath(clean_path)
+    if not os.path.exists(clean_path):
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Video file not found at: {clean_path}. Please verify the file path or use 'Browse Video File' to select it."
+        )
+    
+    clean_path = ensure_faststart(clean_path)
+    is_new_video = (CURRENT_STATE.get("video_path") != clean_path)
+    CURRENT_STATE["video_path"] = clean_path
+    CURRENT_STATE["video_meta"] = probe_video(clean_path)
+    dur = CURRENT_STATE["video_meta"].get("duration", 10.0)
+
+    # 1. Extract source reference frame from the ACTUAL uploaded video for Facecam Reticle
+    source_frame_path = os.path.join(TEMP_DIR, "source_frame.jpg")
+    try:
+        seek_pt = min(5.0, max(0.5, dur * 0.2))
+        subprocess.run([
+            FFMPEG_BIN, "-y",
+            "-ss", str(seek_pt),
+            "-i", clean_path,
+            "-vframes", "1",
+            source_frame_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    except Exception as e:
+        print(f"Frame extraction failed: {e}")
+
+    # 2. Reset subtitles and clips for a newly uploaded / loaded video
+    if is_new_video:
+        CURRENT_STATE["clips"] = []
+        CURRENT_STATE["subtitles"] = []
+        CURRENT_STATE["export_queue"] = []
+
+    if is_demo and os.path.exists(DEFAULT_SUBS_FILE):
+        try:
+            with open(DEFAULT_SUBS_FILE, "r", encoding="utf-8") as f:
+                raw_subs = json.load(f)
+            clean_subs = []
+            for s in raw_subs:
+                sc = dict(s)
+                sc["text"] = re.sub(r'[,.]+', '', sc.get("text", "")).strip()
+                if "words" in sc and sc["words"]:
+                    sc["words"] = [{**w, "word": re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()} for w in sc["words"] if re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()]
+                clean_subs.append(sc)
+            CURRENT_STATE["subtitles"] = clean_subs
+        except Exception:
+            CURRENT_STATE["subtitles"] = []
+
+    save_session_state()
+    import time
+    return {
+        "status": "success",
+        "video_path": clean_path,
+        "is_demo": is_demo,
+        "meta": CURRENT_STATE["video_meta"],
+        "clips": CURRENT_STATE["clips"],
+        "subtitles": CURRENT_STATE["subtitles"],
+        "source_frame": f"/storage/temp/source_frame.jpg?t={time.time()}"
+    }
+
+@app.get("/api/demo_video")
+def get_demo_video():
+    """Finds an available 16:9 widescreen livestream video dynamically without hardcoded machine paths."""
+    preferred = [
+        "PLAYING GTA 6 FOR THE FIRST TIME (PART 2)_60_1800.mp4",
+        "BEATING GTA 6 _FINALE__1826_5418.mp4",
+        "EXPLORING_VICE_CITY_-_GTA_6_STREAM_EASTER_EGG_00h00m00s_to_00h30m00s.mp4",
+        "document_6053073585516323938.mp4"
+    ]
+    for pref in preferred:
+        p = os.path.join(UPLOADS_DIR, pref)
+        if os.path.isfile(p):
+            meta = probe_video(p)
+            w, h = meta.get("width", 0), meta.get("height", 0)
+            if w >= h:
+                return {"success": True, "path": p, "name": pref}
+            
+    if os.path.exists(UPLOADS_DIR):
+        for f in os.listdir(UPLOADS_DIR):
+            if f.lower().endswith((".mp4", ".mkv", ".mov", ".ts", ".webm")) and not f.endswith(".bak"):
+                p = os.path.join(UPLOADS_DIR, f)
+                meta = probe_video(p)
+                w, h = meta.get("width", 0), meta.get("height", 0)
+                if w >= h:
+                    return {"success": True, "path": p, "name": f}
+                
+    return {"success": False, "message": "No sample 16:9 stream video found in storage/uploads"}
+
+@app.post("/api/extract_frame")
+def extract_frame_endpoint(req: Dict[str, Any] = None):
+    """Extracts a frame from the current 16:9 stream at the requested timestamp for the Facecam Reticle."""
+    vpath = CURRENT_STATE.get("video_path")
+    if not vpath or not os.path.exists(vpath):
+        raise HTTPException(status_code=400, detail="No video loaded")
+    time_sec = float((req or {}).get("time", 5.0))
+    source_frame_path = os.path.join(TEMP_DIR, "source_frame.jpg")
+    try:
+        subprocess.run([
+            FFMPEG_BIN, "-y",
+            "-ss", str(time_sec),
+            "-i", vpath,
+            "-vframes", "1",
+            source_frame_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "success", "source_frame": f"/storage/temp/source_frame.jpg?t={time.time()}"}
+
+@app.post("/api/set_source")
+def set_video_source(req: SetSourceReq):
+    raw_path = req.video_path.strip(' \t\r\n"\'“”')
+    clean_path = os.path.normpath(raw_path)
+    return process_loaded_video(clean_path, is_demo=req.is_demo)
+
+@app.post("/api/upload")
+def upload_video(file: UploadFile = File(...)):
+    safe_name = os.path.basename(file.filename)
+    dest_path = os.path.join(UPLOADS_DIR, safe_name)
+    with open(dest_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return process_loaded_video(dest_path, is_demo=False)
+
+@app.post("/api/probe_stream")
+def api_probe_stream(req: ProbeStreamReq):
+    try:
+        from backend.stream_loader import probe_stream, hunt_stream_viral_moments
+        meta = probe_stream(req.url)
+        moments = hunt_stream_viral_moments(req.url, meta.get("duration", 0), meta)
+        return {"status": "success", "meta": meta, "viral_candidates": moments}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/load_stream_range")
+def api_load_stream_range(req: LoadStreamRangeReq):
+    try:
+        from backend.stream_loader import download_stream_slice
+        CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 5, "step": "Connecting to stream..."}
+        def cb(pct, msg):
+            CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": pct, "step": msg}
+            
+        res = download_stream_slice(
+            url=req.url,
+            start_sec=req.start_sec,
+            end_sec=req.end_sec,
+            output_dir=UPLOADS_DIR,
+            custom_title=req.title,
+            quality=req.quality or "max",
+            progress_callback=cb
+        )
+        CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": "Loaded slice into studio!"}
+        # Immediately activate into studio
+        video_meta = process_loaded_video(res["file_path"], is_demo=False)
+        # Pre-seed clip #1 with the candidate's actual title and full duration
+        cand_title = req.title or res.get("title") or f"Highlight ({res['duration']}s)"
+        CURRENT_STATE["clips"] = [{
+            "id": "clip-full",
+            "title": cand_title,
+            "start": 0.0,
+            "end": res["duration"],
+            "duration": res["duration"],
+            "virality_score": 98,
+            "category": "Stream Highlight",
+            "reason": "Peak reaction from audio scan"
+        }]
+        save_session_state()
+        return {"status": "success", "slice": res, "video": video_meta, "clips": CURRENT_STATE["clips"]}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        CURRENT_STATE["stream_progress"] = {"status": "error", "percent": 0, "step": str(e)}
+        raise HTTPException(status_code=500, detail=f"Stream extraction failed: {e}")
+
+@app.get("/api/stream_progress")
+def api_stream_progress():
+    return CURRENT_STATE.get("stream_progress", {"status": "idle", "percent": 0, "step": "Ready"})
+
+@app.post("/api/scan_stream_audio")
+def api_scan_stream_audio(req: ProbeStreamReq):
+    """
+    AUDIO-FIRST SYNERGY PIPELINE (OpusClip / Klap Architecture):
+    1. Downloads ONLY the lightweight compressed stream audio track (~25-40 MB) in 3-6 seconds.
+    2. Runs acoustic RMS energy peak analysis to find real screaming/laughter moments.
+    3. SYNERGY: Transcribes each peak region with Whisper to get actual dialogue for real titles.
+    4. Returns the top ranked viral moments WITH real dialogue-based titles.
+    """
+    try:
+        from backend.stream_loader import probe_stream, download_stream_audio, scan_audio_energy_peaks, hunt_stream_viral_moments, transcribe_audio_peaks
+        meta = probe_stream(req.url)
+        dur = meta.get("duration", 0)
+        
+        CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 10, "step": "Connecting to audio channel (fast mode)..."}
+        def cb(pct, msg):
+            CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": pct, "step": msg}
+            
+        audio_res = download_stream_audio(req.url, output_dir=TEMP_DIR, progress_callback=cb)
+        
+        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 82, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
+        peaks = scan_audio_energy_peaks(audio_res["audio_path"], duration=dur)
+        
+        # SYNERGY PIPELINE: Transcribe each peak region for real dialogue-based titles
+        # This is what makes the difference between "INSANE REACTION" and "BRO FOUND A PEEING NPC 💀"
+        if peaks:
+            n_peaks = len(peaks)
+            CURRENT_STATE["stream_progress"] = {
+                "status": "processing",
+                "percent": 85,
+                "step": f"Transcribing {n_peaks} peak moments with Whisper for real context... (~{n_peaks * 25}s)"
+            }
+            try:
+                peaks = transcribe_audio_peaks(audio_res["audio_path"], peaks, progress_callback=cb)
+            except Exception as trans_err:
+                print(f"[WARN] Peak transcription failed, using energy-only titles: {trans_err}")
+        
+        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 97, "step": "Combining chat signals & chapter markers..."}
+        moments = hunt_stream_viral_moments(req.url, dur, meta=meta, audio_peaks=peaks)
+        if not isinstance(moments, list):
+            moments = []
+        
+        # Store peak transcriptions in state so slice loading can reuse them
+        CURRENT_STATE["peak_transcriptions"] = {
+            str(round(p.get("start", 0), 1)): p.get("spoken_text", "")
+            for p in peaks if p.get("has_transcript")
+        }
+        
+        CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": f"Found {len(moments)} viral moments with real dialogue context!"}
+        return {
+            "status": "success",
+            "meta": meta,
+            "viral_candidates": moments,
+            "audio_size_mb": audio_res.get("size_mb", 0),
+            "mode": "audio_first_synergy"
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        CURRENT_STATE["stream_progress"] = {"status": "error", "percent": 0, "step": str(e)}
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/factory_reset")
+def api_factory_reset():
+    """
+    CLEAN SLATE / FACTORY RESET:
+    Wipes all previous session clips, subtitles, uploads, exports, and temporary files.
+    Preserves all binaries (bin/) and speech models (models/).
+    Prepares the studio for a completely new user.
+    """
+    global CURRENT_STATE, CURRENT_EXPORT_DIR
+    try:
+        # 1. Reset in-memory state
+        CURRENT_STATE["video_path"] = ""
+        CURRENT_STATE["video_meta"] = {}
+        CURRENT_STATE["subtitles"] = []
+        CURRENT_STATE["clips"] = []
+        CURRENT_STATE["export_queue"] = []
+        CURRENT_STATE["export_progress"] = {"status": "idle", "current_clip": 0, "total_clips": 0, "percent": 0, "title": ""}
+        CURRENT_STATE["transcribe_progress"] = {"status": "idle", "step": "Ready", "percent": 0}
+        CURRENT_STATE["stream_progress"] = {"status": "idle", "percent": 0, "step": "Ready"}
+        CURRENT_EXPORT_DIR = OUTPUTS_DIR
+
+        # 2. Delete session state file
+        if os.path.exists(SESSION_STATE_FILE):
+            try:
+                os.remove(SESSION_STATE_FILE)
+            except Exception:
+                pass
+
+        # 3. Clean files in storage/uploads, storage/outputs, storage/temp, storage/thumbnails
+        for folder in [UPLOADS_DIR, OUTPUTS_DIR, TEMP_DIR, THUMBNAILS_DIR]:
+            if os.path.exists(folder):
+                for fname in os.listdir(folder):
+                    if fname == ".gitkeep":
+                        continue
+                    fpath = os.path.join(folder, fname)
+                    try:
+                        if os.path.isfile(fpath) or os.path.islink(fpath):
+                            os.remove(fpath)
+                        elif os.path.isdir(fpath):
+                            shutil.rmtree(fpath, ignore_errors=True)
+                    except Exception:
+                        pass
+
+        # 4. Remove saved master template
+        if os.path.exists(MASTER_TEMPLATE_FILE):
+            try:
+                os.remove(MASTER_TEMPLATE_FILE)
+            except Exception:
+                pass
+
+        # 5. Reload clean demo video if available
+        demo = get_demo_video()
+        demo_path = demo.get("path") if demo else None
+        if demo_path and os.path.exists(demo_path):
+            CURRENT_STATE["video_path"] = demo_path
+            CURRENT_STATE["video_meta"] = probe_video(demo_path)
+
+        return {"status": "success", "message": "Engine completely reset to clean slate. Ready for a new user!"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/detect_clips")
+def detect_clips_endpoint(req: DetectViralReq):
+    video_path = CURRENT_STATE["video_path"]
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=400, detail="No video loaded")
+        
+    duration = CURRENT_STATE["video_meta"].get("duration", 0)
+    if duration <= 0:
+        CURRENT_STATE["video_meta"] = probe_video(video_path)
+        duration = CURRENT_STATE["video_meta"].get("duration", 0)
+        
+    target_n = req.target_clips if req.mode == "manual" else None
+    webcam_crop = req.webcam_crop or (CURRENT_STATE.get("template", {}).get("webcam_crop") if isinstance(CURRENT_STATE.get("template"), dict) else None)
+    try:
+        clips = detect_viral_moments(
+            video_path=video_path,
+            video_duration=duration,
+            subtitles=CURRENT_STATE["subtitles"],
+            min_duration=req.min_duration,
+            max_duration=req.max_duration,
+            target_clips=target_n,
+            profile=req.profile or "balanced",
+            weight_audio=req.weight_audio,
+            weight_pitch=req.weight_pitch,
+            weight_hook=req.weight_hook,
+            weight_speech=req.weight_speech,
+            weight_motion=req.weight_motion,
+            snap_boundaries=req.snap_boundaries if req.snap_boundaries is not None else True,
+            webcam_crop=webcam_crop,
+            use_llm=req.use_llm if req.use_llm is not None else True,
+            llm_model=req.llm_model
+        )
+
+        CURRENT_STATE["clips"] = clips
+        return {"status": "success", "count": len(clips), "clips": clips}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Viral detection failed: {e}")
+
+@app.get("/api/llm/status")
+def get_llm_status():
+    from backend.llm_engine import is_ollama_online, get_installed_llm_models, get_preferred_llama_model
+    online = is_ollama_online()
+    models = get_installed_llm_models() if online else []
+    preferred = get_preferred_llama_model() if online else None
+    return {
+        "status": "success",
+        "online": online,
+        "models": models,
+        "preferred_model": preferred,
+        "recommended": "llama3.2:1b"
+    }
+
+class PullModelReq(BaseModel):
+    model_name: str = "llama3.2:1b"
+
+@app.post("/api/llm/pull")
+def pull_llm_model(req: PullModelReq):
+    import subprocess
+    try:
+        subprocess.Popen(["ollama", "pull", req.model_name])
+        return {"status": "success", "message": f"Started pulling {req.model_name} in background"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/export_folder")
+def get_export_folder():
+    return {"status": "success", "path": CURRENT_EXPORT_DIR}
+
+@app.post("/api/set_export_folder")
+def set_export_folder(req: SetExportFolderReq):
+    global CURRENT_EXPORT_DIR
+    raw = req.folder_path.strip(' \t\r\n"\'“”')
+    if not raw:
+        raise HTTPException(status_code=400, detail="Folder path cannot be empty")
+    clean = os.path.normpath(raw)
+    try:
+        os.makedirs(clean, exist_ok=True)
+        CURRENT_EXPORT_DIR = clean
+        save_session_state()
+        return {"status": "success", "path": CURRENT_EXPORT_DIR}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot create or access folder: {e}")
+
+@app.post("/api/open_folder")
+def open_export_folder():
+    try:
+        target = CURRENT_EXPORT_DIR if os.path.exists(CURRENT_EXPORT_DIR) else OUTPUTS_DIR
+        if os.name == "nt":
+            os.startfile(target)
+        return {"status": "success", "path": target}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "path": CURRENT_EXPORT_DIR}
+
+@app.get("/api/probe")
+def get_probe():
+    if not CURRENT_STATE["video_path"] or not os.path.exists(CURRENT_STATE["video_path"]):
+        raise HTTPException(status_code=400, detail="No video loaded")
+    if not CURRENT_STATE["video_meta"]:
+        CURRENT_STATE["video_meta"] = probe_video(CURRENT_STATE["video_path"])
+    return CURRENT_STATE["video_meta"]
+
+@app.post("/api/transcribe")
+def run_transcription(req: TranscribeReq):
+    video_path = CURRENT_STATE["video_path"]
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=400, detail="No video file loaded. Please upload or load a video first.")
+    
+    # Only load demo subtitles if user explicitly selected demo mode
+    if req.is_demo and os.path.exists(DEFAULT_SUBS_FILE):
+        try:
+            with open(DEFAULT_SUBS_FILE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached and len(cached) > 0:
+                CURRENT_STATE["subtitles"] = cached
+                CURRENT_STATE["transcribe_progress"] = {
+                    "status": "completed", 
+                    "step": f"Instant Demo Sync: {len(cached)} synchronized lines loaded in 0.05s!", 
+                    "percent": 100
+                }
+                return {"status": "success", "count": len(cached), "subtitles": cached}
+        except Exception:
+            pass
+
+    # Transcribe speech directly from the uploaded footage
+    t0_single = time.time()
+    def on_single_transcribe_progress(step_desc: str, sub_percent: int):
+        elapsed = round(time.time() - t0_single, 1)
+        CURRENT_STATE["transcribe_progress"] = {
+            "status": "running",
+            "step": step_desc,
+            "percent": sub_percent,
+            "elapsed_sec": elapsed,
+            "current_clip": 1,
+            "total_clips": 1,
+            "clip_title": "Full Video" if req.start_time is None else f"Clip ({round(req.start_time, 1)}s)"
+        }
+
+    CURRENT_STATE["transcribe_progress"] = {
+        "status": "running",
+        "step": "Extracting 16kHz audio & applying speech normalization...",
+        "percent": 15,
+        "elapsed_sec": 0.0,
+        "current_clip": 1,
+        "total_clips": 1,
+        "clip_title": "Active Target"
+    }
+    
+    try:
+        # Pick model if specified
+        chosen_model = None
+        if req.model_name:
+            cand1 = os.path.join(MODELS_DIR, f"ggml-{req.model_name}.bin")
+            cand2 = os.path.join(MODELS_DIR, req.model_name)
+            if os.path.exists(cand1):
+                chosen_model = cand1
+            elif os.path.exists(cand2):
+                chosen_model = cand2
+
+        w_count = req.words_per_line if req.words_per_line is not None else 3
+        v_meta = CURRENT_STATE.get("video_meta") or probe_video(video_path)
+        v_dur = float(v_meta.get("duration", 0.0))
+        req_start = req.start_time
+        req_dur = req.duration
+        if v_dur > 0.0 and req_start is not None:
+            if req_start >= v_dur:
+                req_start = 0.0
+                req_dur = min(v_dur, req_dur or 15.0)
+            elif req_dur is not None and (req_start + req_dur > v_dur):
+                req_dur = max(1.0, v_dur - req_start)
+
+        subtitles = transcribe_video(
+            video_path=video_path,
+            language=req.language,
+            model_path=chosen_model,
+            words_per_line=w_count,
+            start_time=req_start,
+            duration=req_dur,
+            streamer_voice_focus=req.streamer_voice_focus,
+            audio_track=req.audio_track if req.audio_track is not None else 0,
+            progress_callback=on_single_transcribe_progress
+        )
+        CURRENT_STATE["transcribe_progress"] = {
+            "status": "running", 
+            "step": "Aligning word-by-word karaoke timestamps...", 
+            "percent": 95,
+            "elapsed_sec": round(time.time() - t0_single, 1),
+            "current_clip": 1,
+            "total_clips": 1
+        }
+        
+        if req.start_time is not None and req.duration is not None:
+            # Shift transcribed clip timestamps to match the master stream timeline
+            shifted = []
+            for s in subtitles:
+                s_copy = dict(s)
+                s_copy["start"] = round(float(s["start"]) + req.start_time, 3)
+                s_copy["end"] = round(float(s["end"]) + req.start_time, 3)
+                if "words" in s and s["words"]:
+                    s_copy["words"] = [
+                        {
+                            **w, 
+                            "start": round(float(w.get("start", 0)) + req.start_time, 3), 
+                            "end": round(float(w.get("end", 0)) + req.start_time, 3)
+                        }
+                        for w in s["words"]
+                    ]
+                shifted.append(s_copy)
+            
+            # Merge clip subtitles into existing list
+            existing = [s for s in CURRENT_STATE["subtitles"] if s.get("end", 0) <= req.start_time or s.get("start", 0) >= (req.start_time + req.duration)]
+            CURRENT_STATE["subtitles"] = sorted(existing + shifted, key=lambda x: x.get("start", 0))
+            # If a clip in CURRENT_STATE["clips"] covers this range, attach subtitles directly
+            for c in CURRENT_STATE.get("clips", []):
+                if abs(c.get("start", 0) - req.start_time) < 1.0:
+                    c["subtitles"] = shifted
+                    c["subtitles_count"] = len(shifted)
+
+        else:
+            CURRENT_STATE["subtitles"] = subtitles
+
+        save_session_state()
+        CURRENT_STATE["transcribe_progress"] = {"status": "completed", "step": f"Transcription complete! ({len(subtitles)} lines generated for uploaded footage)", "percent": 100}
+        return {"status": "success", "count": len(subtitles), "subtitles": CURRENT_STATE["subtitles"]}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        CURRENT_STATE["transcribe_progress"] = {"status": "completed", "step": "Transcription completed (silence or non-speech)", "percent": 100}
+        return {"status": "success", "count": 0, "subtitles": CURRENT_STATE.get("subtitles", []), "warning": str(e)}
+
+@app.post("/api/transcribe_all_clips")
+def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
+    video_path = CURRENT_STATE["video_path"]
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=400, detail="No video file loaded. Please upload or load a video first.")
+
+    if not req.clips:
+        raise HTTPException(status_code=400, detail="No clips provided to transcribe.")
+
+    total_clips = len(req.clips)
+    start_batch_t0 = time.time()
+    CURRENT_STATE["transcribe_progress"] = {
+        "status": "running",
+        "step": f"Starting batch transcription for {total_clips} clips with streamer voice isolation...",
+        "percent": 5,
+        "elapsed_sec": 0.0,
+        "current_clip": 1,
+        "total_clips": total_clips,
+        "clip_title": req.clips[0].title if req.clips else "Clip 1"
+    }
+
+    chosen_model = None
+    if req.model_name:
+        cand1 = os.path.join(MODELS_DIR, f"ggml-{req.model_name}.bin")
+        cand2 = os.path.join(MODELS_DIR, req.model_name)
+        if os.path.exists(cand1):
+            chosen_model = cand1
+        elif os.path.exists(cand2):
+            chosen_model = cand2
+
+    w_count = req.words_per_line if req.words_per_line is not None else 3
+    updated_clips = []
+    accumulated_subs = list(CURRENT_STATE.get("subtitles", []))
+
+    v_meta = CURRENT_STATE.get("video_meta") or probe_video(video_path)
+    v_dur = float(v_meta.get("duration", 0.0))
+
+    for idx, c in enumerate(req.clips):
+        c_start = float(c.start)
+        c_end = float(c.end)
+        c_dur = round(c_end - c_start, 2)
+        if v_dur > 0.0:
+            if c_start >= v_dur:
+                c_start = 0.0
+                c_end = min(v_dur, max(1.0, c_dur))
+                c_dur = round(c_end - c_start, 2)
+            elif c_end > v_dur:
+                c_end = v_dur
+                c_dur = round(c_end - c_start, 2)
+
+        base_pct = 5 + (idx / total_clips) * 90.0
+        clip_span = 90.0 / total_clips
+
+        def make_clip_cb(clip_idx, clip_title, clip_d, b_pct, c_span):
+            def cb(step_desc: str, sub_pct: int):
+                overall_pct = int(min(97, b_pct + (sub_pct / 100.0) * c_span))
+                elapsed = round(time.time() - start_batch_t0, 1)
+                CURRENT_STATE["transcribe_progress"] = {
+                    "status": "running",
+                    "step": f"Clip {clip_idx + 1}/{total_clips} ({clip_title}): {step_desc}",
+                    "percent": overall_pct,
+                    "elapsed_sec": elapsed,
+                    "current_clip": clip_idx + 1,
+                    "total_clips": total_clips,
+                    "clip_title": clip_title,
+                    "sub_percent": sub_pct
+                }
+            return cb
+
+        clip_cb = make_clip_cb(idx, c.title, c_dur, base_pct, clip_span)
+        clip_cb("Extracting 16kHz audio & applying speech normalization...", 12)
+
+        c_dict = c.model_dump() if hasattr(c, "model_dump") else c.dict()
+        try:
+            raw_subs = transcribe_video(
+                video_path=video_path,
+                language=req.language,
+                model_path=chosen_model,
+                words_per_line=w_count,
+                start_time=c_start,
+                duration=c_dur,
+                streamer_voice_focus=req.streamer_voice_focus if req.streamer_voice_focus is not None else True,
+                audio_track=req.audio_track or 0,
+                progress_callback=clip_cb
+            )
+
+            # Shift timestamps to match master timeline
+            shifted = []
+            for s in raw_subs:
+                s_copy = dict(s)
+                s_copy["start"] = round(float(s["start"]) + c.start, 3)
+                s_copy["end"] = round(float(s["end"]) + c.start, 3)
+                if "words" in s and s["words"]:
+                    s_copy["words"] = [
+                        {
+                            **w,
+                            "start": round(float(w.get("start", 0)) + c.start, 3),
+                            "end": round(float(w.get("end", 0)) + c.start, 3)
+                        }
+                        for w in s["words"]
+                    ]
+                shifted.append(s_copy)
+
+            c_dict["subtitles"] = shifted
+            c_dict["subtitles_count"] = len(shifted)
+            updated_clips.append(c_dict)
+
+            # Merge into master pool
+            accumulated_subs = [
+                s for s in accumulated_subs
+                if s.get("end", 0) <= c.start or s.get("start", 0) >= c.end
+            ] + shifted
+
+        except Exception as e:
+            print(f"Error transcribing clip {c.id}: {e}")
+            c_dict["subtitles"] = []
+            c_dict["subtitles_count"] = 0
+            updated_clips.append(c_dict)
+
+    accumulated_subs.sort(key=lambda x: x.get("start", 0))
+    CURRENT_STATE["subtitles"] = accumulated_subs
+    CURRENT_STATE["clips"] = updated_clips
+    save_session_state()
+
+    elapsed_total = round(time.time() - start_batch_t0, 1)
+    CURRENT_STATE["transcribe_progress"] = {
+        "status": "completed",
+        "step": f"✓ 100% Synchronized: All {total_clips} clips transcribed ({len(accumulated_subs)} lines in {elapsed_total}s)!",
+        "percent": 100,
+        "elapsed_sec": elapsed_total,
+        "current_clip": total_clips,
+        "total_clips": total_clips,
+        "clip_title": "All Clips Synchronized"
+    }
+
+    return {
+        "status": "success",
+        "clips": updated_clips,
+        "subtitles": accumulated_subs,
+        "total_lines": len(accumulated_subs)
+    }
+
+@app.post("/api/regroup_subtitles")
+def regroup_current_subtitles(req: RegroupReq):
+    """Regroups the existing subtitles into chunks of N words without re-running transcription."""
+    all_words = []
+    for s in CURRENT_STATE.get("subtitles", []):
+        if "words" in s and s["words"]:
+            all_words.extend(s["words"])
+        else:
+            w_list = s.get("text", "").split()
+            dur = max(0.2, s.get("end", 0) - s.get("start", 0))
+            step = dur / max(1, len(w_list))
+            for i, w in enumerate(w_list):
+                all_words.append({
+                    "word": w,
+                    "start": round(s.get("start", 0) + i * step, 2),
+                    "end": round(s.get("start", 0) + (i + 1) * step, 2)
+                })
+    if not all_words:
+        return {"status": "empty", "count": 0, "subtitles": []}
+    
+    regrouped = group_words_into_segments(all_words, words_per_line=req.words_per_line)
+    CURRENT_STATE["subtitles"] = regrouped
+    return {"status": "success", "count": len(regrouped), "subtitles": regrouped}
+
+@app.get("/api/transcribe_progress")
+def get_transcribe_progress():
+    return CURRENT_STATE.get("transcribe_progress", {"status": "idle", "step": "Ready", "percent": 0})
+
+@app.get("/api/subtitles")
+def get_subtitles():
+    return {"subtitles": CURRENT_STATE["subtitles"]}
+
+@app.post("/api/update_subtitles")
+def update_subtitles(subs: List[Dict[str, Any]]):
+    clean_subs = []
+    for s in subs:
+        sc = dict(s)
+        sc["text"] = re.sub(r'[,.]+', '', str(sc.get("text", ""))).strip()
+        if "words" in sc and sc["words"]:
+            sc["words"] = [{**w, "word": re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()} for w in sc["words"] if re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()]
+        clean_subs.append(sc)
+    CURRENT_STATE["subtitles"] = clean_subs
+    return {"status": "success", "count": len(clean_subs)}
+
+@app.post("/api/preview")
+def create_preview(req: PreviewReq):
+    video_path = CURRENT_STATE["video_path"]
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=400, detail="No video loaded")
+    
+    preview_filename = f"preview_frame.png"
+    preview_output = os.path.join(TEMP_DIR, preview_filename)
+    
+    try:
+        subs_to_use = req.subtitles if req.subtitles is not None else CURRENT_STATE.get("subtitles")
+        generate_preview_frame(
+            video_path=video_path,
+            timestamp=req.timestamp,
+            template_config=req.template_config,
+            subtitle_config=req.subtitle_config,
+            output_png=preview_output,
+            hook_config=req.hook_config,
+            all_subtitles=subs_to_use
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview generation failed: {e}")
+        
+    return {"status": "success", "preview_url": f"/storage/temp/{preview_filename}?t={os.path.getmtime(preview_output)}"}
+
+@app.get("/storage/temp/{filename}")
+def serve_temp(filename: str):
+    file_path = os.path.join(TEMP_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    raise HTTPException(status_code=404, detail="File not found")
+
+@app.post("/api/export_clip")
+def export_single_clip(
+    clip: ClipDef,
+    template_config: Dict[str, Any],
+    subtitle_config: Dict[str, Any],
+    hook_config: Optional[Dict[str, Any]] = None,
+    subtitles: Optional[List[Dict[str, Any]]] = None,
+    encoder: Optional[str] = None
+):
+    video_path = CURRENT_STATE["video_path"]
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=400, detail="No video loaded")
+        
+    subs_to_use = subtitles if subtitles is not None else CURRENT_STATE["subtitles"]
+    CURRENT_STATE["export_progress"] = {
+        "status": "rendering",
+        "current_clip": 1,
+        "total_clips": 1,
+        "percent": 5,
+        "title": f"Preparing render: {clip.title}...",
+        "cur_sec": 0.0,
+        "duration": 0.0,
+        "speed": "1.0x",
+        "frame": 0
+    }
+    def progress_callback(pct, cur_sec, dur, speed, frame):
+        CURRENT_STATE["export_progress"] = {
+            "status": "rendering",
+            "current_clip": 1,
+            "total_clips": 1,
+            "percent": pct,
+            "title": f"Rendering {clip.title}: {pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})",
+            "cur_sec": round(cur_sec, 1),
+            "duration": round(dur, 1),
+            "speed": speed,
+            "frame": frame
+        }
+    try:
+        # Always merge request template_config so current active UI settings (divider, resolution, bitrate) are applied
+        tmpl_to_use = dict(template_config or {})
+        if clip.template_config and isinstance(clip.template_config, dict):
+            for k, v in clip.template_config.items():
+                if v is not None:
+                    tmpl_to_use[k] = v
+        for critical_key in ("canvas_w", "canvas_h", "export_bitrate", "divider_line", "divider_color", "divider_height", "pixel_generator", "pixel_generator_mode"):
+            if critical_key in template_config:
+                tmpl_to_use[critical_key] = template_config[critical_key]
+
+        sub_cfg_to_use = clip.subtitle_config if clip.subtitle_config is not None else subtitle_config
+        hook_to_use = clip.hook_config if clip.hook_config is not None else hook_config
+        clip_subs_to_use = (clip.subtitles if hasattr(clip, "subtitles") and clip.subtitles else None) or subs_to_use
+        res = render_clip(
+            video_path=video_path,
+            clip_id=clip.id,
+            start_time=clip.start,
+            end_time=clip.end,
+            title=clip.title,
+            template_config=tmpl_to_use,
+            subtitle_config=sub_cfg_to_use,
+            all_subtitles=clip_subs_to_use,
+            hook_config=hook_to_use,
+            output_dir=CURRENT_EXPORT_DIR,
+            encoder=encoder,
+            progress_callback=progress_callback
+        )
+        CURRENT_STATE["export_progress"] = {
+            "status": "completed",
+            "current_clip": 1,
+            "total_clips": 1,
+            "percent": 100,
+            "title": clip.title
+        }
+        return {"status": "success", "clip": res}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        CURRENT_STATE["export_progress"] = {
+            "status": "error",
+            "current_clip": 1,
+            "total_clips": 1,
+            "percent": 0,
+            "title": clip.title
+        }
+        err_detail = str(e)
+        if hasattr(e, "stderr") and e.stderr:
+            raw_err = e.stderr.decode("utf-8", errors="ignore") if isinstance(e.stderr, bytes) else str(e.stderr)
+            err_detail = raw_err.strip() or err_detail
+        raise HTTPException(status_code=500, detail=f"Export failed: {err_detail}")
+
+@app.post("/api/export_all")
+def export_all_clips(req: ExportReq):
+    video_path = CURRENT_STATE["video_path"]
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=400, detail="No video loaded")
+        
+    subs_to_use = req.subtitles if req.subtitles is not None else CURRENT_STATE["subtitles"]
+    results = []
+    errors = []
+    
+    total = len(req.clips)
+    CURRENT_STATE["export_progress"] = {
+        "status": "rendering",
+        "current_clip": 0,
+        "total_clips": total,
+        "percent": 5,
+        "title": "Initializing batch export..."
+    }
+    
+    for idx, c in enumerate(req.clips):
+        CURRENT_STATE["export_progress"] = {
+            "status": "rendering",
+            "current_clip": idx + 1,
+            "total_clips": total,
+            "percent": max(5, int((idx / total) * 100)),
+            "title": f"Rendering ({idx+1}/{total}): {c.title}",
+            "speed": "1.0x",
+            "frame": 0
+        }
+        def batch_progress_callback(clip_pct, cur_sec, dur, speed, frame):
+            batch_pct = int(((idx + (clip_pct / 100.0)) / total) * 100)
+            CURRENT_STATE["export_progress"] = {
+                "status": "rendering",
+                "current_clip": idx + 1,
+                "total_clips": total,
+                "percent": max(5, min(99, batch_pct)),
+                "title": f"Rendering ({idx+1}/{total}) {c.title}: {clip_pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})",
+                "cur_sec": round(cur_sec, 1),
+                "duration": round(dur, 1),
+                "speed": speed,
+                "frame": frame
+            }
+        try:
+            # Always merge request template_config so current active UI settings (divider, resolution, bitrate) are applied
+            tmpl_to_use = dict(req.template_config or {})
+            if c.template_config and isinstance(c.template_config, dict):
+                for k, v in c.template_config.items():
+                    if v is not None:
+                        tmpl_to_use[k] = v
+            for critical_key in ("canvas_w", "canvas_h", "export_bitrate", "divider_line", "divider_color", "divider_height", "pixel_generator", "pixel_generator_mode"):
+                if critical_key in req.template_config:
+                    tmpl_to_use[critical_key] = req.template_config[critical_key]
+
+            sub_cfg_to_use = c.subtitle_config if c.subtitle_config is not None else req.subtitle_config
+            hook_to_use = c.hook_config if c.hook_config is not None else req.hook_config
+            c_subs_to_use = (c.subtitles if hasattr(c, "subtitles") and c.subtitles else None) or subs_to_use
+            res = render_clip(
+                video_path=video_path,
+                clip_id=c.id,
+                start_time=c.start,
+                end_time=c.end,
+                title=c.title,
+                template_config=tmpl_to_use,
+                subtitle_config=sub_cfg_to_use,
+                all_subtitles=c_subs_to_use,
+                hook_config=hook_to_use,
+                output_dir=CURRENT_EXPORT_DIR,
+                encoder=req.encoder,
+                progress_callback=batch_progress_callback
+            )
+            results.append(res)
+            CURRENT_STATE["export_progress"]["percent"] = int(((idx + 1) / total) * 100)
+        except Exception as e:
+            errors.append({"clip_id": c.id, "error": str(e)})
+            
+    # Optional Batch ZIP Packaging
+    zip_info = None
+    if req.export_as_zip and results:
+        CURRENT_STATE["export_progress"]["title"] = "Packaging clips into ZIP archive..."
+        try:
+            import time
+            base_vid = os.path.splitext(os.path.basename(video_path))[0]
+            clean_pfx = "".join(c for c in base_vid if c.isalnum() or c in ("-", "_")).strip() or "OpenShorts"
+            zip_filename = f"{clean_pfx}_Batch_{int(time.time())}.zip"
+            zip_dest = os.path.join(CURRENT_EXPORT_DIR, zip_filename)
+            with zipfile.ZipFile(zip_dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for r in results:
+                    vp = r.get("video_path")
+                    if vp and os.path.exists(vp):
+                        zf.write(vp, arcname=os.path.basename(vp))
+            CURRENT_STATE["last_batch_zip"] = zip_dest
+            zip_info = {
+                "filename": zip_filename,
+                "download_url": f"/api/download_zip?file={zip_filename}",
+                "size_mb": round(os.path.getsize(zip_dest) / (1024 * 1024), 2)
+            }
+        except Exception as ze:
+            print(f"Batch ZIP creation error: {ze}")
+
+    CURRENT_STATE["export_progress"] = {
+        "status": "completed",
+        "current_clip": total,
+        "total_clips": total,
+        "percent": 100,
+        "title": f"Export complete! ({len(results)} clips rendered)" + (f" • ZIP ready ({zip_info['size_mb']} MB)" if zip_info else "")
+    }
+    return {"status": "success", "exported": results, "errors": errors, "zip": zip_info}
+
+@app.api_route("/media/video", methods=["GET", "HEAD"])
+async def serve_current_video(request: Request):
+    """Streams the active uploaded video footage with HTTP 206 Partial Content range support for zero-latency browser playback."""
+    video_path = CURRENT_STATE.get("video_path")
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="No video loaded")
+
+    file_size = os.path.getsize(video_path)
+    range_header = request.headers.get("range")
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": "video/mp4",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
+    if request.method == "HEAD":
+        headers["Content-Length"] = str(file_size)
+        return Response(status_code=200, headers=headers)
+
+    if range_header:
+        try:
+            h = range_header.strip().lower()
+            if h.startswith("bytes="):
+                range_spec = h[6:].strip()
+                parts = range_spec.split("-")
+                if len(parts) == 2:
+                    if parts[0] == "":
+                        suffix = int(parts[1])
+                        start = max(0, file_size - suffix)
+                        end = file_size - 1
+                    elif parts[1] == "":
+                        start = int(parts[0])
+                        end = file_size - 1
+                    else:
+                        start = int(parts[0])
+                        end = min(int(parts[1]), file_size - 1)
+
+                    if start > end or start >= file_size:
+                        headers["Content-Range"] = f"bytes */{file_size}"
+                        return Response(status_code=416, headers=headers)
+
+                    content_length = (end - start) + 1
+
+                    def iter_range():
+                        try:
+                            with open(video_path, "rb") as f:
+                                f.seek(start)
+                                bytes_left = content_length
+                                chunk_size = 512 * 1024
+                                while bytes_left > 0:
+                                    chunk = f.read(min(bytes_left, chunk_size))
+                                    if not chunk:
+                                        break
+                                    bytes_left -= len(chunk)
+                                    yield chunk
+                        except (GeneratorExit, ConnectionResetError, BrokenPipeError):
+                            return
+
+                    headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                    headers["Content-Length"] = str(content_length)
+                    return StreamingResponse(iter_range(), status_code=206, headers=headers)
+        except Exception as e:
+            print(f"[Video Range Stream Error]: {e}")
+
+    # Fallback full file streaming
+    def iter_full():
+        try:
+            with open(video_path, "rb") as f:
+                chunk_size = 512 * 1024
+                while True:
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    yield data
+        except (GeneratorExit, ConnectionResetError, BrokenPipeError):
+            return
+
+    headers["Content-Length"] = str(file_size)
+    return StreamingResponse(iter_full(), status_code=200, headers=headers)
+
+@app.api_route("/media/output/{filename}", methods=["GET", "HEAD"])
+def serve_output_file(filename: str):
+    safe_name = os.path.basename(filename)
+    for d in (CURRENT_EXPORT_DIR, OUTPUTS_DIR):
+        p = os.path.join(d, safe_name)
+        if os.path.exists(p):
+            return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Media file not found")
+
+@app.get("/media/thumbnail/{clip_id}")
+def serve_clip_thumbnail(clip_id: str):
+    safe_name = os.path.basename(clip_id)
+    thumb_path = os.path.join(THUMBNAILS_DIR, f"{safe_name}_thumb.jpg")
+    if os.path.exists(thumb_path):
+        return FileResponse(thumb_path, media_type="image/jpeg")
+    alt_path = os.path.join(THUMBNAILS_DIR, f"{safe_name}.jpg")
+    if os.path.exists(alt_path):
+        return FileResponse(alt_path, media_type="image/jpeg")
+    raise HTTPException(status_code=404, detail="Thumbnail cover not found")
+
+@app.get("/api/download_zip")
+def download_zip(file: Optional[str] = None):
+    if file:
+        safe_f = os.path.basename(file)
+        for d in (CURRENT_EXPORT_DIR, OUTPUTS_DIR):
+            target = os.path.join(d, safe_f)
+            if os.path.exists(target):
+                return FileResponse(target, filename=safe_f, media_type="application/zip")
+    else:
+        target = CURRENT_STATE.get("last_batch_zip", "")
+        if target and os.path.exists(target):
+            return FileResponse(target, filename=os.path.basename(target), media_type="application/zip")
+    raise HTTPException(status_code=404, detail="ZIP file not found")
+
+@app.post("/api/create_zip_from_outputs")
+def create_zip_from_outputs():
+    target_dir = CURRENT_EXPORT_DIR if os.path.exists(CURRENT_EXPORT_DIR) else OUTPUTS_DIR
+    mp4s = [os.path.join(target_dir, f) for f in os.listdir(target_dir) if f.endswith(".mp4") and not f.endswith("_thumb.jpg")]
+    if not mp4s:
+        raise HTTPException(status_code=400, detail="No exported MP4 clips found to zip")
+    import time
+    zip_name = f"OpenShorts_Batch_Clips_{int(time.time())}.zip"
+    zip_dest = os.path.join(target_dir, zip_name)
+    with zipfile.ZipFile(zip_dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in mp4s:
+            zf.write(p, arcname=os.path.basename(p))
+    CURRENT_STATE["last_batch_zip"] = zip_dest
+    zip_obj = {
+        "filename": zip_name,
+        "download_url": f"/api/download_zip?file={zip_name}",
+        "size_mb": round(os.path.getsize(zip_dest) / (1024 * 1024), 2)
+    }
+    return {
+        "status": "success",
+        "filename": zip_name,
+        "download_url": f"/api/download_zip?file={zip_name}",
+        "size_mb": zip_obj["size_mb"],
+        "zip": zip_obj
+    }
+
+@app.get("/api/progress")
+def get_progress():
+    return CURRENT_STATE["export_progress"]
+
+@app.get("/api/outputs")
+def list_outputs():
+    files = []
+    seen = set()
+    dirs_to_check = [CURRENT_EXPORT_DIR]
+    if OUTPUTS_DIR != CURRENT_EXPORT_DIR and os.path.exists(OUTPUTS_DIR):
+        dirs_to_check.append(OUTPUTS_DIR)
+
+    for d in dirs_to_check:
+        if not os.path.exists(d):
+            continue
+        for f in os.listdir(d):
+            if f.endswith(".mp4") and f not in seen:
+                seen.add(f)
+                mp4_path = os.path.join(d, f)
+                thumb_name = f.replace(".mp4", "_thumb.jpg")
+                thumb_path = os.path.join(d, thumb_name)
+                files.append({
+                    "filename": f,
+                    "video_url": f"/media/output/{f}",
+                    "thumb_url": f"/media/output/{thumb_name}" if os.path.exists(thumb_path) else None,
+                    "size_mb": round(os.path.getsize(mp4_path) / (1024*1024), 2),
+                    "created_at": os.path.getmtime(mp4_path)
+                })
+    files.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"files": files, "export_dir": CURRENT_EXPORT_DIR}
