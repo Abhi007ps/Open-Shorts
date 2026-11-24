@@ -66,7 +66,7 @@ if exist "%VENV_PY%" (
 )
 
 echo [*] Checking Python environment...
-"!PY_CMD!" -c "import fastapi, uvicorn, pydantic, PIL" >nul 2>&1
+"!PY_CMD!" -c "import fastapi, uvicorn, pydantic, PIL, yt_dlp" >nul 2>&1
 if !errorlevel! equ 0 (
     set "ACTIVE_PY=!PY_CMD!"
     goto :check_deps
@@ -82,9 +82,9 @@ if exist "%VENV_PY%" (
 
 :check_deps
 :: 3. Verify / Install Dependencies
-"!ACTIVE_PY!" -c "import fastapi, uvicorn, pydantic, PIL, aiofiles" >nul 2>&1
+"!ACTIVE_PY!" -c "import fastapi, uvicorn, pydantic, PIL, aiofiles, yt_dlp" >nul 2>&1
 if !errorlevel! neq 0 (
-    echo [*] Installing required packages: fastapi, uvicorn, pydantic, pillow, aiofiles...
+    echo [*] Installing required packages: fastapi, uvicorn, pydantic, pillow, aiofiles, yt-dlp...
     "!ACTIVE_PY!" -m pip install -r "%~dp0requirements.txt" --quiet
     if !errorlevel! neq 0 (
         echo [*] Retrying package installation with console output...

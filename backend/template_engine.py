@@ -30,6 +30,7 @@ def generate_template_assets(
     webcam_glow_effect: str = "neon_lightning",
     divider_height: int = 4,
     divider_color: str = "#FFFFFF",
+    layout_mode: str = "floating",
     prefix: str = ""
 ) -> Dict[str, Any]:
     """
@@ -51,8 +52,8 @@ def generate_template_assets(
     glow_rgb = parse_hex_color(webcam_glow_color)
     div_rgb = parse_hex_color(divider_color) if divider_color else gp_rgb
 
-    # Check for Split Screen layout mode (Speed Style from C:\ppp)
-    is_split_screen = (webcam_shape == "split_screen") or (webcam_w >= 1000 and gameplay_w >= 1000) or (webcam_h >= 500)
+    # Check for Split Screen layout mode strictly from layout_mode or webcam_shape
+    is_split_screen = (layout_mode == "split_screen") or (webcam_shape == "split_screen")
 
     # 1. Gameplay Card Mask
     gp_mask = Image.new('L', (gameplay_w * scale, gameplay_h * scale), 255 if is_split_screen else 0)
@@ -243,11 +244,12 @@ def generate_hook_headline_asset(
     if not text:
         return None
         
-    font_size = int(hook_config.get("font_size", 94))
-    pos_y = int(hook_config.get("position_y", 205))
+    scale_factor = canvas_w / 1080.0
+    font_size = max(16, int(round(int(hook_config.get("font_size", 94)) * scale_factor)))
+    pos_y = int(round(int(hook_config.get("position_y", 205)) * scale_factor))
     highlight_word = hook_config.get("highlight_word", "").strip()
-    stroke_w = int(hook_config.get("outline_width", 6))
-    extrusion_d = int(hook_config.get("shadow_depth", 6))
+    stroke_w = max(1, int(round(int(hook_config.get("outline_width", 6)) * scale_factor)))
+    extrusion_d = max(1, int(round(int(hook_config.get("shadow_depth", 6)) * scale_factor)))
     
     # Load Impact font with fallback
     font_cand = ["C:/Windows/Fonts/impact.ttf", "impact.ttf", "arialbd.ttf"]
@@ -287,7 +289,7 @@ def generate_hook_headline_asset(
         hl_bot = "#15803D"
         
     words = text.split()
-    space_w = font.getbbox(' ')[2] - font.getbbox(' ')[0] + 12
+    space_w = font.getbbox(' ')[2] - font.getbbox(' ')[0] + max(2, int(round(12 * scale_factor)))
     
     word_boxes = []
     total_w = 0
@@ -319,7 +321,7 @@ def generate_hook_headline_asset(
             total_w += space_w
             
     max_h = max(wb["h"] for wb in word_boxes)
-    pad = stroke_w + extrusion_d + 18
+    pad = stroke_w + extrusion_d + max(4, int(round(18 * scale_factor)))
     img_h = max_h + pad * 2
     
     hook_img = Image.new("RGBA", (canvas_w, img_h), (0, 0, 0, 0))
@@ -334,7 +336,7 @@ def generate_hook_headline_asset(
         for d in range(1, extrusion_d + 1):
             s_draw.text((curr_x, base_y + d), wb["word"], font=font, fill="#08020c", stroke_width=stroke_w, stroke_fill="#08020c")
         curr_x += wb["w"] + space_w
-    soft_shadow = shadow_img.filter(ImageFilter.GaussianBlur(2.5))
+    soft_shadow = shadow_img.filter(ImageFilter.GaussianBlur(max(1.0, 2.5 * scale_factor)))
     hook_img.alpha_composite(soft_shadow)
     hook_img.alpha_composite(shadow_img)
     
@@ -347,7 +349,7 @@ def generate_hook_headline_asset(
         curr_x += wb["w"] + space_w
     hook_img.alpha_composite(stroke_layer)
     
-    # 3. True vertical gradient fill per word
+    # 3. True vertical gradient fill per word (Fast 1px strip resized to mask.size)
     curr_x = start_x
     def h2rgb(h):
         h = h.lstrip('#')
@@ -364,15 +366,15 @@ def generate_hook_headline_asset(
         r1, g1, b1 = h2rgb(top_c)
         r2, g2, b2 = h2rgb(bot_c)
         
-        grad = Image.new("RGBA", mask.size)
         g_h = mask.size[1]
+        strip = Image.new("RGBA", (1, g_h))
         for y_i in range(g_h):
             t = (y_i / max(1, g_h - 1)) ** 1.05
             cr = int(r1 + (r2 - r1) * t)
             cg = int(g1 + (g2 - g1) * t)
             cb = int(b1 + (b2 - b1) * t)
-            for x_i in range(mask.size[0]):
-                grad.putpixel((x_i, y_i), (cr, cg, cb, 255))
+            strip.putpixel((0, y_i), (cr, cg, cb, 255))
+        grad = strip.resize(mask.size, Image.Resampling.BILINEAR)
                 
         word_render = Image.new("RGBA", mask.size, (0, 0, 0, 0))
         word_render.paste(grad, (0, 0), mask)
@@ -386,6 +388,9 @@ def generate_hook_headline_asset(
 def build_composite_filtergraph(
     canvas_w: int = 1080,
     canvas_h: int = 1920,
+    layout_mode: str = "floating",
+    webcam_shape: str = "circle",
+    input_fps: float = 30.0,
     bg_blur_sigma: int = 30,
     bg_brightness: float = -0.12,
     gameplay_crop: Dict[str, int] = None, # {"x": 0, "y": 0, "w": 640, "h": 360}
@@ -494,7 +499,7 @@ def build_composite_filtergraph(
     cy = (cy // 2) * 2
 
     # Positioning (Speed Split-Screen Viral layout: 1080x700 Facecam + 1080x700 Gameplay = 1400px Active Video)
-    is_split_screen = (webcam_w >= 1000 and gameplay_w >= 1000) or (webcam_h >= 500)
+    is_split_screen = (layout_mode == "split_screen") or (webcam_shape == "split_screen")
     if is_split_screen:
         # Reference template layout: Facecam 700px (Y=260 to 960), Center divider at Y=960,
         # Gameplay 700px (Y=960 to 1660). Total active video: 1400px (matches reference videos in C:\ppp)
@@ -633,8 +638,17 @@ def build_composite_filtergraph(
         cam_bright = brightness_offset + 0.015
         enhance_cam = f"{micro_str_cam}cas={cas_strength_cam:.2f},eq=contrast={cam_contrast:.2f}:saturation={cam_sat:.2f}:brightness={cam_bright:.2f}:gamma={cam_gamma:.2f},gradfun=radius=16:strength=0.9,"
 
-    # Solid pure black background (Speed Viral Letterbox with top and bottom black bars, zero blur)
-    bg_filter = f"color=c=black:s={canvas_w}x{canvas_h}:r=60[bg]"
+    # Background generation: blurred source frame when floating with bg_blur_sigma > 0, else clean solid black
+    if not is_split_screen and bg_blur_sigma > 0:
+        safe_blur = max(1, min(50, int(bg_blur_sigma)))
+        bg_filter = (
+            f"[0:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
+            f"crop={canvas_w}:{canvas_h},"
+            f"boxblur={safe_blur}:2,"
+            f"eq=brightness={bg_brightness}[bg]"
+        )
+    else:
+        bg_filter = f"color=c=black:s={canvas_w}x{canvas_h}:r={input_fps}[bg]"
 
     if is_split_screen:
         filter_chains = [

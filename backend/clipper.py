@@ -25,7 +25,7 @@ def probe_video(video_path: str) -> Dict[str, Any]:
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
     data = json.loads(res.stdout)
     
-    video_stream = next((s for s in data.get("streams", []) if s.get("codec_name") in ("h264", "hevc", "vp9", "av1", "mpeg4")), {})
+    video_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), {})
     
     width = int(video_stream.get("width", 1920))
     height = int(video_stream.get("height", 1080))
@@ -132,6 +132,7 @@ def generate_preview_frame(
     Renders a single 1080x1920 preview image with template, video enhancement, and subtitle sample.
     """
     # 1. Assets with Neon Lightning Glow and Shape Customization
+    layout_mode = template_config.get("layout_mode", "split_screen" if template_config.get("webcam_shape") == "split_screen" else "floating")
     assets = generate_template_assets(
         gameplay_w=template_config.get("gameplay_w", 960),
         gameplay_h=template_config.get("gameplay_h", 540),
@@ -150,7 +151,8 @@ def generate_preview_frame(
         webcam_glow_intensity=template_config.get("webcam_glow_intensity", 1.3),
         webcam_glow_effect=template_config.get("webcam_glow_effect", "neon_lightning"),
         divider_height=template_config.get("divider_height", 4),
-        divider_color=template_config.get("divider_color", "#FFFFFF")
+        divider_color=template_config.get("divider_color", "#FFFFFF"),
+        layout_mode=layout_mode
     )
     
     # 2. Build Hook Title PNG (Pixel-Perfect True Gradient + 3D Extrusion matching reference)
@@ -242,6 +244,9 @@ def generate_preview_frame(
     filtergraph = build_composite_filtergraph(
         canvas_w=template_config.get("canvas_w", 1080),
         canvas_h=template_config.get("canvas_h", 1920),
+        layout_mode=layout_mode,
+        webcam_shape=template_config.get("webcam_shape", "circle"),
+        input_fps=float(vmeta.get("fps", 30.0)),
         bg_blur_sigma=template_config.get("bg_blur_sigma", 30),
         bg_brightness=template_config.get("bg_brightness", -0.12),
         gameplay_crop=template_config.get("gameplay_crop"),
@@ -336,12 +341,8 @@ def render_clip(
     canvas_h = template_config.get("canvas_h", 1920)
     scale_factor = canvas_w / 1080.0
 
-    is_split_screen = (
-        template_config.get("layout_mode") == "split_screen"
-        or (template_config.get("webcam_w", 300) >= 1000 and template_config.get("gameplay_w", 960) >= 1000)
-        or (template_config.get("webcam_h", 300) >= 500)
-        or (template_config.get("webcam_shape") == "split_screen")
-    )
+    layout_mode = template_config.get("layout_mode", "split_screen" if template_config.get("webcam_shape") == "split_screen" else "floating")
+    is_split_screen = (layout_mode == "split_screen") or (template_config.get("webcam_shape") == "split_screen")
 
     if is_split_screen:
         if canvas_h <= 1400:
@@ -390,6 +391,7 @@ def render_clip(
         webcam_glow_effect=template_config.get("webcam_glow_effect", "neon_lightning"),
         divider_height=int(round(template_config.get("divider_height", 4) * scale_factor)),
         divider_color=template_config.get("divider_color", "#FFFFFF"),
+        layout_mode=layout_mode,
         prefix=f"clip_{clip_id}_"
     )
     
@@ -508,6 +510,9 @@ def render_clip(
     filtergraph = build_composite_filtergraph(
         canvas_w=canvas_w,
         canvas_h=canvas_h,
+        layout_mode=layout_mode,
+        webcam_shape=template_config.get("webcam_shape", "circle"),
+        input_fps=float(vmeta.get("fps", 30.0)),
         bg_blur_sigma=template_config.get("bg_blur_sigma", 30),
         bg_brightness=template_config.get("bg_brightness", -0.12),
         gameplay_crop=template_config.get("gameplay_crop"),
@@ -523,7 +528,7 @@ def render_clip(
         webcam_x=int(round(template_config.get("webcam_x") * scale_factor)) if template_config.get("webcam_x") is not None else None,
         webcam_y=int(round(template_config.get("webcam_y", 540) * scale_factor)),
         webcam_glow_pad=assets.get("webcam_glow_pad", 0),
-        hook_title_y=int(round(hook_y * scale_factor)) if hook_y is not None else None,
+        hook_title_y=hook_y,
         sharpen_amount=template_config.get("sharpen_amount", 0.8),
         contrast_boost=template_config.get("contrast_boost", 1.08),
         saturation_boost=template_config.get("saturation_boost", 1.22),
