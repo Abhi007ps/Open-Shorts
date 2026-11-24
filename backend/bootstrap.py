@@ -1,7 +1,7 @@
 """
 OpenShorts Studio Pre-Flight Self-Diagnostic & Bootstrap Engine.
-Verifies system dependencies, binaries, models, and hardware acceleration
-before launching the web studio. Self-heals missing models or folders.
+Verifies system dependencies, binaries, models, RAM, GPU/VRAM,
+auto-tuned performance profile, and hardware acceleration before launching the web studio.
 """
 
 import os
@@ -41,7 +41,6 @@ def verify_binaries():
     # 2. Whisper-CLI
     try:
         res = subprocess.run([WHISPER_CLI, "-h"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
-        # whisper-cli -h outputs usage to stderr or stdout
         if res.returncode == 0 or "usage" in (res.stdout + res.stderr).lower():
             print(f"  [OK] Whisper CLI:     {os.path.basename(WHISPER_CLI)} (High-speed C++ engine ready)")
         else:
@@ -60,17 +59,23 @@ def verify_models():
         print(f"  [ERROR] Model verification error: {e}")
 
 def verify_hardware():
-    """Detect and display active hardware encoder (NVIDIA / Intel / AMD / CPU)."""
+    """Detect and display active hardware encoder (NVIDIA / Intel / AMD / Apple / CPU), RAM, VRAM, and Auto-Tuned Tier."""
     from backend.hardware import get_hardware_profile
     profile = get_hardware_profile()
     cpu = profile.get("cpu", {})
     gpu = profile.get("gpu", {})
+    ram = profile.get("ram", {})
+    perf = profile.get("performance_profile", {})
     enc = profile.get("recommended_encoder", "libx264")
     
     print(f"  [OK] CPU Architecture: {cpu.get('model', 'CPU')} ({cpu.get('cores', 4)} cores / {cpu.get('whisper_threads', 4)} whisper threads)")
+    print(f"  [OK] System Memory:    {ram.get('total_gb', 0.0)} GB RAM ({ram.get('available_gb', 0.0)} GB available)")
     primary_gpu = gpu.get("primary", "Integrated / System Graphics")
-    print(f"  [OK] GPU Accelerator:  {primary_gpu}")
+    vram_str = f" • {gpu.get('vram_gb', 0.0)} GB VRAM" if gpu.get("vram_gb", 0.0) > 0 else ""
+    print(f"  [OK] GPU Accelerator:  {primary_gpu}{vram_str}")
     print(f"  [OK] Video Encoder:    {enc.upper()} (Ultra-low latency hardware export active)")
+    tier_name = perf.get("tier", "balanced").upper()
+    print(f"  [OK] Auto-Tuned Tier:  {tier_name} (Workers: {perf.get('export_workers', 1)}, Filters: {perf.get('filter_mode', 'balanced')}, Bitrate: {perf.get('default_1080p_bitrate', '12M')}, LLM: {perf.get('llm_tier', 'standard')})")
 
 def main():
     print("---------------------------------------------------------------------")

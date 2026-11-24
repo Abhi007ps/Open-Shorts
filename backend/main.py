@@ -1183,6 +1183,7 @@ def create_preview(req: PreviewReq):
     
     try:
         subs_to_use = req.subtitles if req.subtitles is not None else CURRENT_STATE.get("subtitles")
+        video_meta = CURRENT_STATE.get("video_meta")
         generate_preview_frame(
             video_path=video_path,
             timestamp=req.timestamp,
@@ -1190,7 +1191,8 @@ def create_preview(req: PreviewReq):
             subtitle_config=req.subtitle_config,
             output_png=preview_output,
             hook_config=req.hook_config,
-            all_subtitles=subs_to_use
+            all_subtitles=subs_to_use,
+            video_meta=video_meta
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview generation failed: {e}")
@@ -1255,6 +1257,7 @@ def export_single_clip(
         sub_cfg_to_use = clip.subtitle_config if clip.subtitle_config is not None else subtitle_config
         hook_to_use = clip.hook_config if clip.hook_config is not None else hook_config
         clip_subs_to_use = (clip.subtitles if hasattr(clip, "subtitles") and clip.subtitles else None) or subs_to_use
+        video_meta = CURRENT_STATE.get("video_meta")
         res = render_clip(
             video_path=video_path,
             clip_id=clip.id,
@@ -1267,7 +1270,9 @@ def export_single_clip(
             hook_config=hook_to_use,
             output_dir=CURRENT_EXPORT_DIR,
             encoder=encoder,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            video_meta=video_meta,
+            workers_count=1
         )
         CURRENT_STATE["export_progress"] = {
             "status": "completed",
@@ -1300,6 +1305,7 @@ def export_all_clips(req: ExportReq):
         raise HTTPException(status_code=400, detail="No video loaded")
         
     subs_to_use = req.subtitles if req.subtitles is not None else CURRENT_STATE["subtitles"]
+    video_meta = CURRENT_STATE.get("video_meta")
     results = []
     errors = []
     
@@ -1311,32 +1317,39 @@ def export_all_clips(req: ExportReq):
         "percent": 5,
         "title": "Initializing batch export..."
     }
-    
-    for idx, c in enumerate(req.clips):
-        CURRENT_STATE["export_progress"] = {
-            "status": "rendering",
-            "current_clip": idx + 1,
-            "total_clips": total,
-            "percent": max(5, int((idx / total) * 100)),
-            "title": f"Rendering ({idx+1}/{total}): {c.title}",
-            "speed": "1.0x",
-            "frame": 0
-        }
-        def batch_progress_callback(clip_pct, cur_sec, dur, speed, frame):
-            batch_pct = int(((idx + (clip_pct / 100.0)) / total) * 100)
-            CURRENT_STATE["export_progress"] = {
-                "status": "rendering",
-                "current_clip": idx + 1,
-                "total_clips": total,
-                "percent": max(5, min(99, batch_pct)),
-                "title": f"Rendering ({idx+1}/{total}) {c.title}: {clip_pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})",
-                "cur_sec": round(cur_sec, 1),
-                "duration": round(dur, 1),
-                "speed": speed,
-                "frame": frame
-            }
-        try:
-            # Always merge request template_config so current active UI settings (divider, resolution, bitrate) are applied
+
+    from backend.hardware import get_performance_profile
+    perf_prof = get_performance_profile()
+    max_workers = min(total, max(1, perf_prof.get("export_workers", 1)))
+
+    if max_workers > 1:
+        # Concurrent Multi-Worker Batch Export (Ultra/Performance Tiers)
+        import concurrent.futures
+        import threading
+
+        progress_lock = threading.Lock()
+        clip_pcts: Dict[str, float] = {c.id: 0.0 for c in req.clips}
+        completed_count = 0
+
+        def render_worker(idx: int, c: ClipDef):
+            nonlocal completed_count
+            def batch_progress_cb(clip_pct, cur_sec, dur, speed, frame):
+                nonlocal completed_count
+                with progress_lock:
+                    clip_pcts[c.id] = float(clip_pct)
+                    overall_pct = int(sum(clip_pcts.values()) / max(1, total))
+                    CURRENT_STATE["export_progress"] = {
+                        "status": "rendering",
+                        "current_clip": min(total, completed_count + 1),
+                        "total_clips": total,
+                        "percent": max(5, min(99, overall_pct)),
+                        "title": f"Rendering ({completed_count + 1}/{total}) {c.title}: {clip_pct}% ({speed})",
+                        "cur_sec": round(cur_sec, 1),
+                        "duration": round(dur, 1),
+                        "speed": speed,
+                        "frame": frame
+                    }
+
             tmpl_to_use = dict(req.template_config or {})
             if c.template_config and isinstance(c.template_config, dict):
                 for k, v in c.template_config.items():
@@ -1349,6 +1362,7 @@ def export_all_clips(req: ExportReq):
             sub_cfg_to_use = c.subtitle_config if c.subtitle_config is not None else req.subtitle_config
             hook_to_use = c.hook_config if c.hook_config is not None else req.hook_config
             c_subs_to_use = (c.subtitles if hasattr(c, "subtitles") and c.subtitles else None) or subs_to_use
+
             res = render_clip(
                 video_path=video_path,
                 clip_id=c.id,
@@ -1361,12 +1375,88 @@ def export_all_clips(req: ExportReq):
                 hook_config=hook_to_use,
                 output_dir=CURRENT_EXPORT_DIR,
                 encoder=req.encoder,
-                progress_callback=batch_progress_callback
+                progress_callback=batch_progress_cb,
+                video_meta=video_meta,
+                workers_count=max_workers
             )
-            results.append(res)
-            CURRENT_STATE["export_progress"]["percent"] = int(((idx + 1) / total) * 100)
-        except Exception as e:
-            errors.append({"clip_id": c.id, "error": str(e)})
+            with progress_lock:
+                completed_count += 1
+                clip_pcts[c.id] = 100.0
+                overall_pct = int(sum(clip_pcts.values()) / max(1, total))
+                CURRENT_STATE["export_progress"]["percent"] = max(5, min(100, overall_pct))
+            return res
+
+        results_ordered = [None] * total
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(render_worker, idx, c): (idx, c) for idx, c in enumerate(req.clips)}
+            for fut in concurrent.futures.as_completed(future_map):
+                idx, c = future_map[fut]
+                try:
+                    res = fut.result()
+                    results_ordered[idx] = res
+                except Exception as e:
+                    errors.append({"clip_id": c.id, "error": str(e)})
+
+        results = [r for r in results_ordered if r is not None]
+    else:
+        # Serial Batch Export (Balanced/Eco Tiers)
+        for idx, c in enumerate(req.clips):
+            CURRENT_STATE["export_progress"] = {
+                "status": "rendering",
+                "current_clip": idx + 1,
+                "total_clips": total,
+                "percent": max(5, int((idx / total) * 100)),
+                "title": f"Rendering ({idx+1}/{total}): {c.title}",
+                "speed": "1.0x",
+                "frame": 0
+            }
+            def batch_progress_callback(clip_pct, cur_sec, dur, speed, frame):
+                batch_pct = int(((idx + (clip_pct / 100.0)) / total) * 100)
+                CURRENT_STATE["export_progress"] = {
+                    "status": "rendering",
+                    "current_clip": idx + 1,
+                    "total_clips": total,
+                    "percent": max(5, min(99, batch_pct)),
+                    "title": f"Rendering ({idx+1}/{total}) {c.title}: {clip_pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})",
+                    "cur_sec": round(cur_sec, 1),
+                    "duration": round(dur, 1),
+                    "speed": speed,
+                    "frame": frame
+                }
+            try:
+                # Always merge request template_config so current active UI settings (divider, resolution, bitrate) are applied
+                tmpl_to_use = dict(req.template_config or {})
+                if c.template_config and isinstance(c.template_config, dict):
+                    for k, v in c.template_config.items():
+                        if v is not None:
+                            tmpl_to_use[k] = v
+                for critical_key in ("canvas_w", "canvas_h", "export_bitrate", "divider_line", "divider_color", "divider_height", "pixel_generator", "pixel_generator_mode"):
+                    if critical_key in req.template_config:
+                        tmpl_to_use[critical_key] = req.template_config[critical_key]
+
+                sub_cfg_to_use = c.subtitle_config if c.subtitle_config is not None else req.subtitle_config
+                hook_to_use = c.hook_config if c.hook_config is not None else req.hook_config
+                c_subs_to_use = (c.subtitles if hasattr(c, "subtitles") and c.subtitles else None) or subs_to_use
+                res = render_clip(
+                    video_path=video_path,
+                    clip_id=c.id,
+                    start_time=c.start,
+                    end_time=c.end,
+                    title=c.title,
+                    template_config=tmpl_to_use,
+                    subtitle_config=sub_cfg_to_use,
+                    all_subtitles=c_subs_to_use,
+                    hook_config=hook_to_use,
+                    output_dir=CURRENT_EXPORT_DIR,
+                    encoder=req.encoder,
+                    progress_callback=batch_progress_callback,
+                    video_meta=video_meta,
+                    workers_count=1
+                )
+                results.append(res)
+                CURRENT_STATE["export_progress"]["percent"] = int(((idx + 1) / total) * 100)
+            except Exception as e:
+                errors.append({"clip_id": c.id, "error": str(e)})
             
     # Optional Batch ZIP Packaging
     zip_info = None

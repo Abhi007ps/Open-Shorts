@@ -126,7 +126,8 @@ def generate_preview_frame(
     subtitle_config: Dict[str, Any],
     output_png: str,
     hook_config: Optional[Dict[str, Any]] = None,
-    all_subtitles: Optional[List[Dict[str, Any]]] = None
+    all_subtitles: Optional[List[Dict[str, Any]]] = None,
+    video_meta: Optional[Dict[str, Any]] = None
 ) -> str:
     """
     Renders a single 1080x1920 preview image with template, video enhancement, and subtitle sample.
@@ -237,9 +238,12 @@ def generate_preview_frame(
         )
     
     # 4. Filtergraph
-    vmeta = probe_video(video_path)
+    vmeta = video_meta or probe_video(video_path)
     in_w = int(vmeta.get("width", 1920))
     in_h = int(vmeta.get("height", 1080))
+
+    from backend.hardware import get_performance_profile, get_best_encoder
+    perf_prof = get_performance_profile()
 
     filtergraph = build_composite_filtergraph(
         canvas_w=template_config.get("canvas_w", 1080),
@@ -275,7 +279,9 @@ def generate_preview_frame(
         divider_color=template_config.get("divider_color", "#FFFFFF"),
         divider_height=template_config.get("divider_height", 4),
         input_video_w=in_w,
-        input_video_h=in_h
+        input_video_h=in_h,
+        performance_tier=perf_prof.get("filter_mode"),
+        encoder_name=get_best_encoder()
     )
     
     cmd = [
@@ -323,7 +329,9 @@ def render_clip(
     hook_config: Optional[Dict[str, Any]] = None,
     output_dir: Optional[str] = None,
     encoder: Optional[str] = None,
-    progress_callback: Optional[Callable[[int, float, float, str, int], None]] = None
+    progress_callback: Optional[Callable[[int, float, float, str, int], None]] = None,
+    video_meta: Optional[Dict[str, Any]] = None,
+    workers_count: int = 1
 ) -> Dict[str, Any]:
     """
     Renders a high quality vertical 9:16 clip with full template, upscaling, enhancement,
@@ -484,7 +492,8 @@ def render_clip(
 
     # Generate ASS file only if subtitles are enabled and there are dialogue subtitles
     if clip_subtitles and subtitles_enabled:
-        clip_ass_path = os.path.join(TEMP_DIR, f"{clip_id}_subs.ass")
+        rand_suffix = uuid.uuid4().hex[:6]
+        clip_ass_path = os.path.join(TEMP_DIR, f"{clip_id}_{rand_suffix}_subs.ass")
         generate_ass_subtitles(
             segments=clip_subtitles,
             output_path=clip_ass_path,
@@ -503,9 +512,13 @@ def render_clip(
         )
 
     # 4. Construct filtergraph with Topaz Super-Resolution & Micro-Detail Pipeline
-    vmeta = probe_video(video_path)
+    vmeta = video_meta or probe_video(video_path)
     in_w = int(vmeta.get("width", 1920))
     in_h = int(vmeta.get("height", 1080))
+
+    from backend.hardware import get_performance_profile
+    perf_prof = get_performance_profile()
+    active_encoder = encoder if (encoder and encoder != "auto") else get_best_encoder()
 
     filtergraph = build_composite_filtergraph(
         canvas_w=canvas_w,
@@ -543,7 +556,9 @@ def render_clip(
         divider_color=template_config.get("divider_color", "#FFFFFF"),
         divider_height=template_config.get("divider_height", 4),
         input_video_w=in_w,
-        input_video_h=in_h
+        input_video_h=in_h,
+        performance_tier=perf_prof.get("filter_mode"),
+        encoder_name=active_encoder
     )
     
     # 5. Render using high quality settings and adaptive hardware acceleration
@@ -559,15 +574,21 @@ def render_clip(
             end_time = vdur
     duration = max(0.5, end_time - start_time)
     
-    # Auto-detect or use user-selected video encoder & bitrate profile
-    active_encoder = encoder if (encoder and encoder != "auto") else get_best_encoder()
-    is_pixel_gen = template_config.get("pixel_generator", True)
-    default_bitrate = "35M" if is_pixel_gen else "20M"
+    # Select smart default bitrate by canvas resolution and hardware profile when none is explicitly set
+    if canvas_w >= 2160:
+        default_bitrate = "35M"
+    elif canvas_w >= 1440:
+        default_bitrate = "20M"
+    else:
+        default_bitrate = perf_prof.get("default_1080p_bitrate", "12M")
+
     export_bitrate = template_config.get("export_bitrate") or subtitle_config.get("export_bitrate") or default_bitrate
     enc_args = get_encoder_args(active_encoder, bitrate=export_bitrate)
 
     cpu_info = get_cpu_info()
-    cpu_threads = str(cpu_info.get("ffmpeg_threads", 4))
+    total_threads = int(cpu_info.get("ffmpeg_threads", 4))
+    eff_threads = max(2, total_threads // max(1, workers_count))
+    cpu_threads = str(eff_threads)
 
     base_cmd = [
         FFMPEG_BIN, "-y",

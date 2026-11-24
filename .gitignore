@@ -63,6 +63,8 @@ scratch/
 inspect/
 
 # Runtime-generated overlay masks & borders
+assets/cache/
+assets/*.png
 assets/gameplay_border.png
 assets/gameplay_mask.png
 assets/webcam_border.png

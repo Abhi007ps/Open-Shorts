@@ -2,13 +2,33 @@ import os
 import math
 import random
 import uuid
+import hashlib
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from typing import Dict, Any, Tuple, Optional, List
 
 ASSETS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets"))
 TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "temp"))
+CACHE_DIR = os.path.join(ASSETS_DIR, "cache")
 os.makedirs(ASSETS_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+def prune_template_cache(max_files: int = 120):
+    """Keeps the generated assets/cache/ directory bounded by pruning oldest cached PNGs."""
+    try:
+        if not os.path.exists(CACHE_DIR):
+            return
+        files = [os.path.join(CACHE_DIR, f) for f in os.listdir(CACHE_DIR) if f.endswith(".png")]
+        if len(files) > max_files:
+            files.sort(key=lambda p: os.path.getmtime(p))
+            to_remove = len(files) - max_files
+            for old_path in files[:to_remove]:
+                try:
+                    os.remove(old_path)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 def generate_template_assets(
     gameplay_w: int = 960,
@@ -55,13 +75,41 @@ def generate_template_assets(
     # Check for Split Screen layout mode strictly from layout_mode or webcam_shape
     is_split_screen = (layout_mode == "split_screen") or (webcam_shape == "split_screen")
 
+    # Compute glow_pad upfront so cached lookups can return it immediately
+    glow_pad = 0
+    if webcam_glow_enabled and not is_split_screen:
+        glow_r = max(10, int(webcam_glow_size))
+        glow_pad = glow_r + 12
+
+    # Fast MD5-based mask caching to eliminate redundant Pillow Gaussian blur operations
+    param_str = (
+        f"{gameplay_w}_{gameplay_h}_{gameplay_radius}_{gameplay_border_w}_{gameplay_border_color}_"
+        f"{webcam_w}_{webcam_h}_{webcam_shape}_{webcam_radius}_{webcam_border_w}_{webcam_border_color}_"
+        f"{webcam_glow_enabled}_{webcam_glow_color}_{webcam_glow_size}_{webcam_glow_intensity}_{webcam_glow_effect}_"
+        f"{divider_height}_{divider_color}_{layout_mode}"
+    )
+    cache_hash = hashlib.md5(param_str.encode("utf-8")).hexdigest()[:12]
+    gp_mask_path = os.path.join(CACHE_DIR, f"{cache_hash}_gameplay_mask.png")
+    gp_border_path = os.path.join(CACHE_DIR, f"{cache_hash}_gameplay_border.png")
+    cam_mask_path = os.path.join(CACHE_DIR, f"{cache_hash}_webcam_mask.png")
+    cam_border_path = os.path.join(CACHE_DIR, f"{cache_hash}_webcam_border.png")
+
+    if (os.path.exists(gp_mask_path) and os.path.exists(gp_border_path) and
+        os.path.exists(cam_mask_path) and os.path.exists(cam_border_path)):
+        return {
+            "gameplay_mask": gp_mask_path,
+            "gameplay_border": gp_border_path,
+            "webcam_mask": cam_mask_path,
+            "webcam_border": cam_border_path,
+            "webcam_glow_pad": glow_pad
+        }
+
     # 1. Gameplay Card Mask
     gp_mask = Image.new('L', (gameplay_w * scale, gameplay_h * scale), 255 if is_split_screen else 0)
     if not is_split_screen:
         draw_gm = ImageDraw.Draw(gp_mask)
         draw_gm.rounded_rectangle([0, 0, gameplay_w * scale - 1, gameplay_h * scale - 1], radius=gameplay_radius * scale, fill=255)
     gp_mask = gp_mask.resize((gameplay_w, gameplay_h), Image.Resampling.LANCZOS)
-    gp_mask_path = os.path.join(ASSETS_DIR, f"{prefix}gameplay_mask.png")
     gp_mask.save(gp_mask_path)
 
     # 2. Gameplay Card Border (For split screen: adjustable crisp horizontal divider bar at the top edge)
@@ -79,7 +127,6 @@ def generate_template_assets(
             width=gameplay_border_w * scale
         )
     gp_border = gp_border.resize((gameplay_w, gameplay_h), Image.Resampling.LANCZOS)
-    gp_border_path = os.path.join(ASSETS_DIR, f"{prefix}gameplay_border.png")
     gp_border.save(gp_border_path)
 
     # 3. Webcam Mask (Circle, Rounded Square, Rectangle, or Split Screen Top)
@@ -93,7 +140,6 @@ def generate_template_assets(
         else:
             draw_cm.ellipse([0, 0, webcam_w * scale - 1, webcam_h * scale - 1], fill=255)
     cam_mask = cam_mask.resize((webcam_w, webcam_h), Image.Resampling.LANCZOS)
-    cam_mask_path = os.path.join(ASSETS_DIR, f"{prefix}webcam_mask.png")
     cam_mask.save(cam_mask_path)
 
     # 4. Webcam Border with Reference-Grade Radiant Neon Plasma Halo
@@ -215,8 +261,8 @@ def generate_template_assets(
                 )
         cam_border = cam_border.resize((webcam_w, webcam_h), Image.Resampling.LANCZOS)
         
-    cam_border_path = os.path.join(ASSETS_DIR, f"{prefix}webcam_border.png")
     cam_border.save(cam_border_path)
+    prune_template_cache(max_files=120)
 
     return {
         "gameplay_mask": gp_mask_path,
@@ -421,16 +467,21 @@ def build_composite_filtergraph(
     divider_color: str = "#FFFFFF",
     divider_height: int = 4,
     input_video_w: int = 1920,
-    input_video_h: int = 1080
+    input_video_h: int = 1080,
+    performance_tier: Optional[str] = None,
+    encoder_name: Optional[str] = None
 ) -> str:
     """
-    Constructs the complete FFmpeg complex filter string with Topaz-grade upscaling and enhancements.
-    Supports 4K UHD (2160x3840), 2K QHD (1440x2560), and 1080p with:
-    1. Deblock & Spatio-Temporal Denoise Pre-Pass (cleans stream macroblocks before scaling)
-    2. Lanczos-4 Sinc Super-Resolution Scaling with full chroma planes (full_chroma_int+full_chroma_inp)
-    3. Dual-Stage Detail Recovery: Fine High-Pass Micro-Texture Unsharp + AMD FidelityFX CAS (zero halos)
-    4. Dynamic Range Studio Black Re-anchoring (rich cinematic blacks & highlight pop)
+    Constructs the complete FFmpeg complex filter string with Topaz-grade upscaling,
+    tier-aware adaptive optimizations (fast downsampled background blur, deblock bypass on eco/fast),
+    and hardware upload stages (VA-API).
     """
+    if performance_tier is None:
+        try:
+            from backend.hardware import get_performance_profile
+            performance_tier = get_performance_profile().get("filter_mode", "balanced")
+        except Exception:
+            performance_tier = "balanced"
     # Gameplay crop, zoom, and framing pan (horizontal & vertical positioning inside card)
     src_w = int(input_video_w or 1920)
     src_h = int(input_video_h or 1080)
@@ -601,18 +652,31 @@ def build_composite_filtergraph(
             deblock_str = "hqdn3d=0.6:0.6:1.2:1.2," if deblock_level in ("medium", "strong") else ""
             cam_pre_deblock = "hqdn3d=0.5:0.5:1.0:1.0," if deblock_level in ("medium", "strong") else ""
 
+        # Tier-aware bypass: skip heavy CPU deblocking/denoising on eco and fast tiers
+        if performance_tier in ("eco", "fast"):
+            deblock_str = ""
+            cam_pre_deblock = ""
+
         micro_str_gp = f"unsharp=lx=3:ly=3:la={la_gp:.2f}:cx=3:cy=3:ca=0.0,"
         micro_str_cam = f"unsharp=lx=3:ly=3:la={la_cam:.2f}:cx=3:cy=3:ca=0.0,"
         gp_gamma = 1.01
         cam_gamma = 1.04
         cam_bright = brightness_offset + 0.015
 
-        enhance_gp = f"{micro_str_gp}cas={cas_strength_gp:.2f},eq=contrast={gp_contrast:.2f}:saturation={gp_sat:.2f}:brightness={brightness_offset:.2f}:gamma={gp_gamma:.2f},gradfun=radius=12:strength=0.8,"
-        enhance_cam = f"{micro_str_cam}cas={cas_strength_cam:.2f},eq=contrast={cam_contrast:.2f}:saturation={cam_sat:.2f}:brightness={cam_bright:.2f}:gamma={cam_gamma:.2f},gradfun=radius=16:strength=0.9,"
+        # Skip heavy CPU gradfun debanding filter on eco/fast tiers
+        gradfun_gp = "" if performance_tier in ("eco", "fast") else "gradfun=radius=12:strength=0.8,"
+        gradfun_cam = "" if performance_tier in ("eco", "fast") else "gradfun=radius=16:strength=0.9,"
+
+        enhance_gp = f"{micro_str_gp}cas={cas_strength_gp:.2f},eq=contrast={gp_contrast:.2f}:saturation={gp_sat:.2f}:brightness={brightness_offset:.2f}:gamma={gp_gamma:.2f},{gradfun_gp}"
+        enhance_cam = f"{micro_str_cam}cas={cas_strength_cam:.2f},eq=contrast={cam_contrast:.2f}:saturation={cam_sat:.2f}:brightness={cam_bright:.2f}:gamma={cam_gamma:.2f},{gradfun_cam}"
     else:
         # Standard Fallback
         deblock_str = "hqdn3d=0.6:0.6:1.2:1.2," if deblock_level in ("medium", "strong") else ""
         cam_pre_deblock = "hqdn3d=0.5:0.5:1.0:1.0," if deblock_level in ("medium", "strong") else ""
+
+        if performance_tier in ("eco", "fast"):
+            deblock_str = ""
+            cam_pre_deblock = ""
 
         micro_str_gp = ""
         if micro_texture > 0.05:
@@ -630,23 +694,38 @@ def build_composite_filtergraph(
         gp_contrast = max(1.04, min(1.12, contrast_boost))
         gp_sat = max(1.08, min(1.25, saturation_boost))
         gp_gamma = 1.01
-        enhance_gp = f"{micro_str_gp}cas={cas_strength_gp:.2f},eq=contrast={gp_contrast:.2f}:saturation={gp_sat:.2f}:brightness={brightness_offset:.2f}:gamma={gp_gamma:.2f},gradfun=radius=12:strength=0.8,"
+        gradfun_gp = "" if performance_tier in ("eco", "fast") else "gradfun=radius=12:strength=0.8,"
+        gradfun_cam = "" if performance_tier in ("eco", "fast") else "gradfun=radius=16:strength=0.9,"
+        enhance_gp = f"{micro_str_gp}cas={cas_strength_gp:.2f},eq=contrast={gp_contrast:.2f}:saturation={gp_sat:.2f}:brightness={brightness_offset:.2f}:gamma={gp_gamma:.2f},{gradfun_gp}"
 
         cam_sat = min(1.08, max(1.01, 1.0 + (saturation_boost - 1.0) * 0.35))
         cam_contrast = min(1.06, max(1.00, 1.0 + (contrast_boost - 1.0) * 0.50))
         cam_gamma = 1.04
         cam_bright = brightness_offset + 0.015
-        enhance_cam = f"{micro_str_cam}cas={cas_strength_cam:.2f},eq=contrast={cam_contrast:.2f}:saturation={cam_sat:.2f}:brightness={cam_bright:.2f}:gamma={cam_gamma:.2f},gradfun=radius=16:strength=0.9,"
+        enhance_cam = f"{micro_str_cam}cas={cas_strength_cam:.2f},eq=contrast={cam_contrast:.2f}:saturation={cam_sat:.2f}:brightness={cam_bright:.2f}:gamma={cam_gamma:.2f},{gradfun_cam}"
 
     # Background generation: blurred source frame when floating with bg_blur_sigma > 0, else clean solid black
     if not is_split_screen and bg_blur_sigma > 0:
         safe_blur = max(1, min(50, int(bg_blur_sigma)))
-        bg_filter = (
-            f"[0:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
-            f"crop={canvas_w}:{canvas_h},"
-            f"boxblur={safe_blur}:2,"
-            f"eq=brightness={bg_brightness}[bg]"
-        )
+        if performance_tier in ("eco", "fast"):
+            # 4x-8x faster bokeh blur on laptops by downscaling ~1/4 before blur and upscaling back
+            down_w = max(160, (canvas_w // 4 // 2) * 2)
+            down_h = max(270, (canvas_h // 4 // 2) * 2)
+            down_blur = max(1, safe_blur // 4)
+            bg_filter = (
+                f"[0:v]scale={down_w}:{down_h}:force_original_aspect_ratio=increase,"
+                f"crop={down_w}:{down_h},"
+                f"boxblur={down_blur}:1,"
+                f"scale={canvas_w}:{canvas_h}:flags=bilinear,"
+                f"eq=brightness={bg_brightness}[bg]"
+            )
+        else:
+            bg_filter = (
+                f"[0:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
+                f"crop={canvas_w}:{canvas_h},"
+                f"boxblur={safe_blur}:2,"
+                f"eq=brightness={bg_brightness}[bg]"
+            )
     else:
         bg_filter = f"color=c=black:s={canvas_w}x{canvas_h}:r={input_fps}[bg]"
 
@@ -699,11 +778,15 @@ def build_composite_filtergraph(
         else:
             filter_chains.append(f"[bg_all][4:v]overlay={webcam_x - webcam_glow_pad}:{webcam_y - webcam_glow_pad}:eof_action=repeat[pre_sub]")
 
-    # 4. Optional Subtitle overlay
+    # 4. Optional Subtitle overlay and optional VA-API hardware upload
+    sub_target = "[pre_vaapi]" if encoder_name == "h264_vaapi" else "[out_v]"
     if subtitles_ass_path and os.path.exists(subtitles_ass_path):
         escaped_ass = subtitles_ass_path.replace("\\", "/").replace(":", "\\:")
-        filter_chains.append(f"[pre_sub]ass='{escaped_ass}'[out_v]")
+        filter_chains.append(f"[pre_sub]ass='{escaped_ass}'{sub_target}")
     else:
-        filter_chains.append(f"[pre_sub]null[out_v]")
+        filter_chains.append(f"[pre_sub]null{sub_target}")
+
+    if encoder_name == "h264_vaapi":
+        filter_chains.append(f"[pre_vaapi]format=nv12,hwupload[out_v]")
 
     return ";".join(filter_chains)

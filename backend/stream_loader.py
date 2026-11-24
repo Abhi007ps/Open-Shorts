@@ -760,14 +760,16 @@ def transcribe_audio_peaks(
                 enriched.append(peak)
                 continue
 
-            # Run Whisper on this small segment (should take ~15-30s for 36s audio on CPU)
+            # Run Whisper on this small segment (scaled with CPU thread profile)
+            from backend.hardware import get_cpu_info
+            w_threads = str(get_cpu_info().get("whisper_threads", 4))
             whisper_cmd = [
                 WHISPER_CLI,
                 "-m", model_path,
                 "-f", wav_path,
                 "-osrt",
                 "-of", srt_base,
-                "-t", "4",
+                "-t", w_threads,
                 "-bo", "1", "-bs", "1",
                 "-mc", "32",
                 "-nf", "-np",

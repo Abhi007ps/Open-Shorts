@@ -802,7 +802,7 @@ def transcribe_video(
             res = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             if res.returncode != 0:
                 print(f"[WARN] Whisper pass 1 returned exit {res.returncode}: {res.stderr.strip() if res.stderr else ''}")
-                # Retry with minimal parameters (without -dtw or -nfa in case of version compatibility)
+                # Retry with minimal parameters and disable GPU (-ng) for CPU fallback
                 simple_cmd = [
                     WHISPER_CLI,
                     "-m", model_path,
@@ -810,7 +810,8 @@ def transcribe_video(
                     "-ojf",
                     "-osrt",
                     "-of", base_out,
-                    "-t", whisper_threads
+                    "-t", whisper_threads,
+                    "-ng"
                 ]
                 res2 = subprocess.run(simple_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
                 if res2.returncode != 0:

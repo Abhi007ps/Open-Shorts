@@ -42,19 +42,19 @@ DESPAIR_KEYWORDS = {
     "khatam", "barbaad", "yeh kya tha", "aisa mat kar"
 }
 
-def extract_audio_features(video_path: str, sample_rate: int = 16000, window_sec: float = 0.5, max_duration: Optional[float] = None) -> Dict[str, Any]:
+def extract_audio_features(video_path: str, sample_rate: int = 8000, window_sec: float = 0.5, max_duration: Optional[float] = None) -> Dict[str, Any]:
     """
-    Extracts 16kHz mono audio using Ultra-Fast Streamer Vocal Isolation:
-    - High-speed vocal band isolation without heavy FFT noise filters or harsh gates (runs at >120x realtime)
+    Extracts 8kHz mono audio using Chunked Low-RAM Streaming & Ultra-Fast Streamer Vocal Isolation:
+    - Streams audio in window-sized chunks directly from FFmpeg stdout to avoid buffering multi-hour PCM in RAM
     - Highpass above 90Hz to eliminate sub-bass rumbles (explosions, engines, gunfire)
-    - Lowpass below 6500Hz to eliminate high-frequency hiss
+    - Lowpass below 3800Hz to eliminate high-frequency hiss while preserving vocal frequencies
     - Vocal resonance boost at 320Hz and 2200Hz to keep streamer voice prominent
-    - Preserves natural streamer speech and laughter without muting them
-    - Computes RMS energy, Zero-Crossing Rate (ZCR), and Vocal Excitement Index.
+    - Computes RMS energy, Zero-Crossing Rate (ZCR), and Vocal Excitement Index per window.
     """
+    bytes_per_window = int(sample_rate * 2 * window_sec)
     audio_filter = (
         "pan=mono|c0=0.5*c0+0.5*c1,"
-        "highpass=f=90,lowpass=f=6500,"
+        "highpass=f=90,lowpass=f=3800,"
         "equalizer=f=320:t=q:w=1.5:g=3.5,"
         "equalizer=f=2200:t=q:w=1.5:g=4.0,"
         "volume=1.4"
@@ -73,20 +73,55 @@ def extract_audio_features(video_path: str, sample_rate: int = 16000, window_sec
         "-f", "s16le",
         "-"
     ])
-    raw_bytes = b""
-    ff_timeout = max(60.0, float(max_duration or 1800.0) * 0.10)
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        raw_bytes, err = proc.communicate(timeout=ff_timeout)
-    except Exception as e:
-        print(f"Streamer audio feature extraction failed or timed out: {e}")
-        try:
-            proc.kill()
-        except Exception:
-            pass
 
-    if not raw_bytes or len(raw_bytes) < 3200:
-        # Fallback to direct extraction if filtered extraction returned insufficient bytes
+    def stream_windows(exec_cmd: List[str]) -> Tuple[List[float], List[float]]:
+        r_list: List[float] = []
+        z_list: List[float] = []
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                exec_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL
+            )
+            while True:
+                chunk = proc.stdout.read(bytes_per_window)
+                if not chunk or len(chunk) < 4:
+                    break
+                samples = array.array('h')
+                samples.frombytes(chunk)
+                num_s = len(samples)
+                if num_s == 0:
+                    continue
+                # RMS
+                sum_sq = sum(s * s for s in samples)
+                r_list.append(math.sqrt(sum_sq / num_s))
+                # ZCR
+                zcr = sum(
+                    1 for j in range(1, num_s)
+                    if (samples[j] >= 0 and samples[j-1] < 0) or (samples[j] < 0 and samples[j-1] >= 0)
+                ) / num_s
+                z_list.append(zcr)
+        except Exception as e:
+            print(f"Chunked audio streaming warning: {e}")
+        finally:
+            if proc:
+                try:
+                    if proc.stdout:
+                        proc.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+        return r_list, z_list
+
+    rms_list, zcr_list = stream_windows(cmd)
+
+    if not rms_list or len(rms_list) < 4:
+        # Fallback to direct unfiltered extraction if filtered extraction returned zero or insufficient windows
         fallback_cmd = [
             FFMPEG_BIN, "-y",
             "-i", video_path
@@ -100,36 +135,10 @@ def extract_audio_features(video_path: str, sample_rate: int = 16000, window_sec
             "-f", "s16le",
             "-"
         ])
-        try:
-            fb_proc = subprocess.Popen(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            raw_bytes, _ = fb_proc.communicate(timeout=ff_timeout)
-        except Exception:
-            pass
+        rms_list, zcr_list = stream_windows(fallback_cmd)
 
-    if not raw_bytes:
-        return {"rms": [], "zcr": [], "gradient": [], "excitement": [], "mean_rms": 1.0, "max_rms": 1.0, "mean_zcr": 0.1, "max_zcr": 0.5, "window_sec": window_sec}
-
-    samples = array.array('h', raw_bytes)
-    window_samples = int(sample_rate * window_sec)
-    num_windows = len(samples) // window_samples
-    
-    rms_list = []
-    zcr_list = []
-    
-    for w in range(num_windows):
-        start_idx = w * window_samples
-        chunk = samples[start_idx : start_idx + window_samples]
-        if not chunk:
-            rms_list.append(0.0)
-            zcr_list.append(0.0)
-            continue
-        sum_sq = sum(s * s for s in chunk)
-        rms = math.sqrt(sum_sq / len(chunk))
-        rms_list.append(rms)
-        
-        # Zero-Crossing Rate (vocal fold excitation & pitch/shouting)
-        zcr = sum(1 for j in range(1, len(chunk)) if (chunk[j] >= 0 and chunk[j-1] < 0) or (chunk[j] < 0 and chunk[j-1] >= 0)) / len(chunk)
-        zcr_list.append(zcr)
+    if not rms_list:
+        return {"rms": [], "zcr": [], "gradient": [], "excitement": [], "contrast": [], "mean_rms": 1.0, "max_rms": 1.0, "mean_zcr": 0.1, "max_zcr": 0.5, "window_sec": window_sec}
 
     # Compute sudden energy rise gradient (dE/dt)
     gradient_list = [0.0]
@@ -149,8 +158,7 @@ def extract_audio_features(video_path: str, sample_rate: int = 16000, window_sec
         # S-curve vocal excitement
         excitement_list.append(r_norm * (z_norm ** 1.05))
 
-    # UPGRADE 4: Dynamic Audio Contrast & Transient Spike Detection
-    # Detects sudden dynamic range spikes (>12dB / 4x surge in <100ms) after quiet tension (jumpscares, headshots, screams)
+    # Dynamic Audio Contrast & Transient Spike Detection
     contrast_list = []
     trailing_win = max(2, int(2.0 / window_sec))
     for i in range(len(rms_list)):

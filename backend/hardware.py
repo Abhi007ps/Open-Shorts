@@ -1,7 +1,8 @@
 """
 OpenShorts Hardware Auto-Detection & Adaptive Hardware Acceleration Engine.
-Detects CPU model/threads, GPU vendors, and dynamically probes FFmpeg for available
-hardware encoders (NVIDIA NVENC, Intel QuickSync QSV, AMD AMF, Apple VideoToolbox, or CPU libx264).
+Detects CPU model/threads, GPU vendors, VRAM, and RAM, dynamically probes FFmpeg for available
+hardware encoders (NVIDIA NVENC, Intel QuickSync QSV, AMD AMF, Apple VideoToolbox, Linux VA-API, or CPU libx264),
+and calculates an auto-adaptive performance tier (ultra, performance, balanced, eco).
 Also provides portable path discovery for bundled binaries (ffmpeg, ffprobe, whisper-cli).
 """
 
@@ -10,6 +11,7 @@ import sys
 import platform
 import subprocess
 import shutil
+import struct
 from typing import Dict, Any, List, Optional
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -50,7 +52,6 @@ def find_binary(bin_name: str, subdirs: Optional[List[str]] = None) -> str:
 
     # 3. Common system fallbacks
     if is_win:
-        # Check WinGet package location fallback
         winget_fallback = os.path.expanduser(
             r"~\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin"
         )
@@ -120,9 +121,93 @@ def get_cpu_info() -> Dict[str, Any]:
         "ffmpeg_threads": max(1, min(cores, 16))
     }
 
-def get_gpu_info() -> Dict[str, Any]:
-    """Detects installed graphics hardware and prioritizes dedicated GPUs."""
+# Cache for RAM detection
+_RAM_CACHE: Optional[Dict[str, Any]] = None
+
+def get_ram_info(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Detects total and available system RAM in gigabytes (GB) using zero external pip packages.
+    Cross-platform support for Windows (ctypes GlobalMemoryStatusEx), Linux (/proc/meminfo),
+    and macOS (sysctl hw.memsize).
+    """
+    global _RAM_CACHE
+    if _RAM_CACHE is not None and not force_refresh:
+        return _RAM_CACHE
+
+    total_gb = 8.0
+    available_gb = 4.0
+    system = platform.system()
+
+    if system == "Windows":
+        try:
+            import ctypes
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                total_gb = round(stat.ullTotalPhys / (1024 ** 3), 1)
+                available_gb = round(stat.ullAvailPhys / (1024 ** 3), 1)
+        except Exception:
+            pass
+    elif system == "Linux":
+        try:
+            mem_total_kb = 0
+            mem_avail_kb = 0
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        mem_total_kb = int(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        mem_avail_kb = int(line.split()[1])
+            if mem_total_kb > 0:
+                total_gb = round(mem_total_kb / (1024 * 1024), 1)
+            if mem_avail_kb > 0:
+                available_gb = round(mem_avail_kb / (1024 * 1024), 1)
+            else:
+                available_gb = round(total_gb * 0.5, 1)
+        except Exception:
+            pass
+    elif system == "Darwin":
+        try:
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, timeout=2).strip()
+            if out and out.isdigit():
+                total_gb = round(int(out) / (1024 ** 3), 1)
+                available_gb = round(total_gb * 0.5, 1)
+        except Exception:
+            pass
+
+    res = {
+        "total_gb": total_gb,
+        "available_gb": available_gb
+    }
+    _RAM_CACHE = res
+    return res
+
+# Cache for GPU info
+_GPU_CACHE: Optional[Dict[str, Any]] = None
+
+def get_gpu_info(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Detects installed graphics hardware, prioritizes dedicated GPUs,
+    and detects dedicated/usable VRAM in GB.
+    """
+    global _GPU_CACHE
+    if _GPU_CACHE is not None and not force_refresh:
+        return _GPU_CACHE
+
     gpus: List[str] = []
+    vram_gb: float = 0.0
     system = platform.system()
 
     if system == "Windows":
@@ -144,6 +229,21 @@ def get_gpu_info() -> Dict[str, Any]:
                             driver_desc, _ = winreg.QueryValueEx(dev_key, "DriverDesc")
                             if driver_desc and driver_desc not in gpus:
                                 gpus.append(driver_desc)
+                            # Probe VRAM in registry
+                            for key_name in ["HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize", "AdapterRAM"]:
+                                try:
+                                    val, _ = winreg.QueryValueEx(dev_key, key_name)
+                                    if isinstance(val, bytes):
+                                        if len(val) == 8:
+                                            val = struct.unpack("<Q", val)[0]
+                                        elif len(val) == 4:
+                                            val = struct.unpack("<I", val)[0]
+                                    if isinstance(val, (int, float)) and val > 0:
+                                        cur_gb = round(val / (1024 ** 3), 1)
+                                        if cur_gb > vram_gb:
+                                            vram_gb = cur_gb
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                 except OSError:
@@ -151,15 +251,40 @@ def get_gpu_info() -> Dict[str, Any]:
         except Exception:
             pass
 
-        # 2. PowerShell fallback if registry is empty
-        if not gpus:
+        # 2. Try nvidia-smi if NVIDIA is installed
+        if any("nvidia" in g.lower() or "geforce" in g.lower() or "rtx" in g.lower() for g in gpus):
             try:
-                cmd = ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"]
-                out = subprocess.check_output(cmd, text=True, timeout=5).strip()
+                cmd = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+                out = subprocess.check_output(cmd, text=True, timeout=2).strip()
                 if out:
-                    gpus = [line.strip() for line in out.splitlines() if line.strip()]
+                    val_mb = float(out.splitlines()[0].strip())
+                    nv_gb = round(val_mb / 1024.0, 1)
+                    if nv_gb > 0.0:
+                        vram_gb = nv_gb
             except Exception:
                 pass
+
+        # 3. PowerShell fallback if registry is empty
+        if not gpus:
+            try:
+                cmd = ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -Property Name, AdapterRAM | ConvertTo-Json"]
+                out = subprocess.check_output(cmd, text=True, timeout=5).strip()
+                if out:
+                    import json
+                    parsed = json.loads(out)
+                    items = parsed if isinstance(parsed, list) else [parsed]
+                    for it in items:
+                        name = it.get("Name")
+                        if name and name not in gpus:
+                            gpus.append(name)
+                        aram = it.get("AdapterRAM")
+                        if aram and isinstance(aram, (int, float)) and aram > 0:
+                            cur_gb = round(aram / (1024 ** 3), 1)
+                            if cur_gb > vram_gb:
+                                vram_gb = cur_gb
+            except Exception:
+                pass
+
     elif system == "Linux":
         try:
             out = subprocess.check_output(["lspci"], text=True, timeout=3)
@@ -168,6 +293,16 @@ def get_gpu_info() -> Dict[str, Any]:
                     gpus.append(line.split(":", 2)[-1].strip())
         except Exception:
             pass
+        # Try nvidia-smi on Linux
+        try:
+            cmd = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+            out = subprocess.check_output(cmd, text=True, timeout=2).strip()
+            if out:
+                val_mb = float(out.splitlines()[0].strip())
+                vram_gb = round(val_mb / 1024.0, 1)
+        except Exception:
+            pass
+
     elif system == "Darwin":
         try:
             cmd = ["system_profiler", "SPDisplaysDataType"]
@@ -177,13 +312,14 @@ def get_gpu_info() -> Dict[str, Any]:
                     gpus.append(line.split(":", 1)[1].strip())
         except Exception:
             pass
+        # Apple Silicon unified memory estimate
+        if platform.machine() in ("arm64", "aarch64"):
+            ram = get_ram_info()
+            vram_gb = round(ram.get("total_gb", 16.0) * 0.65, 1)
 
     if not gpus:
         gpus = ["Integrated / Standard Display Device"]
 
-    # Dedicated GPU priority filter:
-    # If device has both iGPU (Intel UHD) and dGPU (NVIDIA RTX / AMD RX),
-    # prioritize the dedicated GPU for all heavy rendering workloads.
     def is_dedicated(name: str) -> bool:
         nl = name.lower()
         return any(k in nl for k in (
@@ -205,12 +341,15 @@ def get_gpu_info() -> Dict[str, Any]:
     elif "apple" in primary_lower or "m1" in primary_lower or "m2" in primary_lower or "m3" in primary_lower or "m4" in primary_lower:
         vendor = "Apple"
 
-    return {
+    res = {
         "devices": gpus,
         "primary": primary,
         "vendor": vendor,
-        "is_dedicated": bool(dedicated)
+        "is_dedicated": bool(dedicated),
+        "vram_gb": round(vram_gb, 1)
     }
+    _GPU_CACHE = res
+    return res
 
 # Cache for hardware encoder probing
 _ENCODER_CACHE: Optional[Dict[str, bool]] = None
@@ -219,26 +358,48 @@ def probe_hardware_encoders(force_refresh: bool = False) -> Dict[str, bool]:
     """
     Performs live 0.1-second test encodes via FFmpeg to definitively verify
     which hardware acceleration encoders are operational on this specific PC.
+    Supports NVENC, QSV, AMF, Apple VideoToolbox, Linux VA-API, and CPU libx264.
     """
     global _ENCODER_CACHE
     if _ENCODER_CACHE is not None and not force_refresh:
         return _ENCODER_CACHE
 
-    encoders_to_test = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "libx264"]
+    is_linux = platform.system() == "Linux"
+    has_vaapi_device = is_linux and os.path.exists("/dev/dri/renderD128")
+
+    encoders_to_test = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox"]
+    if has_vaapi_device:
+        encoders_to_test.append("h264_vaapi")
+    encoders_to_test.append("libx264")
+
     results = {}
 
     for enc in encoders_to_test:
         try:
-            cmd = [
-                FFMPEG_BIN,
-                "-hide_banner",
-                "-loglevel", "error",
-                "-f", "lavfi",
-                "-i", "color=c=black:s=256x256:d=0.1",
-                "-c:v", enc,
-                "-f", "null",
-                "-"
-            ]
+            if enc == "h264_vaapi":
+                cmd = [
+                    FFMPEG_BIN,
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-vaapi_device", "/dev/dri/renderD128",
+                    "-f", "lavfi",
+                    "-i", "color=c=black:s=256x256:d=0.1",
+                    "-vf", "format=nv12,hwupload",
+                    "-c:v", "h264_vaapi",
+                    "-f", "null",
+                    "-"
+                ]
+            else:
+                cmd = [
+                    FFMPEG_BIN,
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-f", "lavfi",
+                    "-i", "color=c=black:s=256x256:d=0.1",
+                    "-c:v", enc,
+                    "-f", "null",
+                    "-"
+                ]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             results[enc] = (res.returncode == 0)
         except Exception:
@@ -254,7 +415,7 @@ def probe_hardware_encoders(force_refresh: bool = False) -> Dict[str, bool]:
 def get_best_encoder() -> str:
     """
     Determines the fastest hardware encoder supported on the current machine.
-    Hierarchy: NVIDIA NVENC -> Intel QuickSync -> AMD AMF -> Apple VideoToolbox -> Multi-Core CPU (libx264).
+    Hierarchy: NVIDIA NVENC -> Intel QuickSync -> AMD AMF -> Apple VideoToolbox -> Linux VA-API -> Multi-Core CPU (libx264).
     """
     probed = probe_hardware_encoders()
     if probed.get("h264_nvenc"):
@@ -265,12 +426,14 @@ def get_best_encoder() -> str:
         return "h264_amf"
     if probed.get("h264_videotoolbox"):
         return "h264_videotoolbox"
+    if probed.get("h264_vaapi"):
+        return "h264_vaapi"
     return "libx264"
 
 def get_encoder_args(encoder: str, threads: Optional[int] = None, bitrate: Optional[str] = None) -> List[str]:
     """
     Returns optimal FFmpeg video encoding arguments for the selected encoder.
-    Supports Topaz 4K Master bitrates (35M), 2K Ultra (20M), 1080p High (12M), 8M, 5M.
+    Supports Topaz 4K Master bitrates (35M), 2K Ultra (20M), 1080p High (12M-15M), 8M, 5M.
     """
     cpu_info = get_cpu_info()
     t = str(threads or cpu_info["ffmpeg_threads"])
@@ -329,6 +492,15 @@ def get_encoder_args(encoder: str, threads: Optional[int] = None, bitrate: Optio
             "-b:v", target_bitrate,
             "-pix_fmt", "yuv420p"
         ]
+    elif encoder == "h264_vaapi":
+        bufsize = "80M" if is_ultra else ("50M" if is_2k else "35M")
+        return [
+            "-vaapi_device", "/dev/dri/renderD128",
+            "-c:v", "h264_vaapi",
+            "-b:v", target_bitrate,
+            "-maxrate", target_bitrate,
+            "-bufsize", bufsize
+        ]
     else:  # libx264 fallback
         crf = "16" if is_ultra else ("18" if is_2k else "20")
         preset = "fast"
@@ -345,13 +517,88 @@ def get_encoder_args(encoder: str, threads: Optional[int] = None, bitrate: Optio
             "-threads", t
         ]
 
+# Cache for performance profile
+_PERF_PROFILE_CACHE: Optional[Dict[str, Any]] = None
+
+def get_performance_profile(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Classifies the system into one of 4 auto-adaptive tiers:
+    - 'ultra': Dedicated GPU with vram_gb >= 8 (or Apple Silicon >= 24GB) AND cores >= 8 AND ram_gb >= 16
+    - 'performance': Dedicated GPU with vram_gb >= 4 OR (cores >= 8 and ram_gb >= 16)
+    - 'balanced': Hardware iGPU (qsv/amf/vaapi/videotoolbox) OR (cores >= 6 and ram_gb >= 12)
+    - 'eco': CPU-only / < 12 GB RAM / <= 4 cores
+    Returns concrete tuning parameters for concurrency, filters, bitrates, Whisper, and LLMs.
+    """
+    global _PERF_PROFILE_CACHE
+    if _PERF_PROFILE_CACHE is not None and not force_refresh:
+        return _PERF_PROFILE_CACHE
+
+    cpu = get_cpu_info()
+    gpu = get_gpu_info()
+    ram = get_ram_info()
+    best_enc = get_best_encoder()
+
+    cores = int(cpu.get("cores", 4))
+    ram_gb = float(ram.get("total_gb", 8.0))
+    vram_gb = float(gpu.get("vram_gb", 0.0))
+    is_dedicated = bool(gpu.get("is_dedicated", False))
+    is_hw_enc = best_enc in ("h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "h264_vaapi")
+    is_apple_silicon = gpu.get("vendor") == "Apple" and platform.system() == "Darwin"
+
+    # Tier Classification
+    if ((is_dedicated and vram_gb >= 8.0) or (is_apple_silicon and ram_gb >= 24.0)) and (cores >= 8) and (ram_gb >= 16.0):
+        tier = "ultra"
+        export_workers = 3
+        filter_mode = "ultra"
+        default_1080p_bitrate = "15M"
+        whisper_model = "base.en"
+        llm_tier = "large"
+    elif ((is_hw_enc and (is_dedicated or vram_gb >= 4.0)) and vram_gb >= 4.0) or (cores >= 8 and ram_gb >= 16.0):
+        tier = "performance"
+        export_workers = 2
+        filter_mode = "balanced"
+        default_1080p_bitrate = "14M"
+        whisper_model = "base.en"
+        llm_tier = "standard"
+    elif is_hw_enc or (cores >= 6 and ram_gb >= 12.0):
+        tier = "balanced"
+        export_workers = 1
+        filter_mode = "fast"
+        default_1080p_bitrate = "12M"
+        whisper_model = "base.en"
+        llm_tier = "compact" if (ram_gb < 12.0 and not is_dedicated) else "standard"
+    else:
+        tier = "eco"
+        export_workers = 1
+        filter_mode = "eco"
+        default_1080p_bitrate = "10M"
+        whisper_model = "tiny.en"
+        llm_tier = "compact"
+
+    profile = {
+        "tier": tier,
+        "export_workers": export_workers,
+        "filter_mode": filter_mode,
+        "default_1080p_bitrate": default_1080p_bitrate,
+        "whisper_model": whisper_model,
+        "llm_tier": llm_tier,
+        "ram_gb": ram_gb,
+        "vram_gb": vram_gb,
+        "cores": cores,
+        "best_encoder": best_enc
+    }
+    _PERF_PROFILE_CACHE = profile
+    return profile
+
 def get_hardware_profile() -> Dict[str, Any]:
     """
-    Returns complete hardware specification and acceleration capabilities
-    for the UI and backend processing.
+    Returns complete hardware specification, RAM, performance profile,
+    and acceleration capabilities for the UI and backend processing.
     """
     cpu = get_cpu_info()
     gpu = get_gpu_info()
+    ram = get_ram_info()
+    perf = get_performance_profile()
     probed = probe_hardware_encoders()
     best_enc = get_best_encoder()
 
@@ -360,11 +607,11 @@ def get_hardware_profile() -> Dict[str, Any]:
         "h264_qsv": "⚡ Intel QuickSync QSV GPU (Hardware Accelerated)",
         "h264_amf": "⚡ AMD AMF Radeon GPU (Hardware Accelerated)",
         "h264_videotoolbox": "⚡ Apple Silicon VideoToolbox (Hardware Accelerated)",
+        "h264_vaapi": "⚡ Linux VA-API GPU Acceleration (Hardware Accelerated)",
         "libx264": f"🚀 Ultrafast Multi-Core CPU ({cpu['cores']} Threads)"
     }
 
     encoders_list = []
-    # Always put the recommended one first or clearly marked
     for enc_id, label in encoder_labels.items():
         is_avail = probed.get(enc_id, False)
         is_rec = (enc_id == best_enc)
@@ -385,12 +632,16 @@ def get_hardware_profile() -> Dict[str, Any]:
         badge = "⚡ AMD AMF (Active)"
     elif best_enc == "h264_videotoolbox":
         badge = "⚡ Apple VideoToolbox (Active)"
+    elif best_enc == "h264_vaapi":
+        badge = "⚡ Linux VA-API (Active)"
     else:
         badge = f"🚀 Multi-Core CPU ({cpu['cores']}T)"
 
     return {
         "cpu": cpu,
         "gpu": gpu,
+        "ram": ram,
+        "performance_profile": perf,
         "available_encoders": probed,
         "encoders_list": encoders_list,
         "recommended_encoder": best_enc,

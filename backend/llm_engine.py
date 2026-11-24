@@ -33,28 +33,53 @@ def get_installed_llm_models(timeout: float = 3.0) -> List[str]:
 def get_preferred_llama_model() -> Optional[str]:
     """
     Selects the best available local LLM model for viral clip titling and story curation.
-    Prioritizes high-intelligence models with native JSON and instruction support:
-    qwen3:8b, qwen3:14b, gemma4:12b, qwen3:4b, followed by lightweight fallbacks.
+    Auto-tunes priority based on detected hardware profile (llm_tier):
+    - On 'standard' / 'large' (>= 12GB RAM or dedicated GPU): qwen3:8b, qwen3:14b, gemma4:12b, etc.
+    - On 'compact' (< 12GB RAM and no dedicated GPU): qwen3:4b, phi4-mini, qwen2.5:3b ahead of qwen3:8b.
     """
     installed = get_installed_llm_models()
     if not installed:
         return None
 
-    priority = [
-        "qwen3:8b",
-        "qwen3:14b",
-        "gemma4:12b",
-        "qwen3:4b",
-        "phi4-mini",
-        "qwen2.5:7b",
-        "llama3.1:8b",
-        "qwen2.5:3b",
-        "llama3.2:3b",
-        "qwen2.5:1.5b",
-        "llama3.2:1b",
-        "qwen3.5:4b",
-        "qwen2.5:0.5b"
-    ]
+    try:
+        from backend.hardware import get_performance_profile
+        llm_tier = get_performance_profile().get("llm_tier", "standard")
+    except Exception:
+        llm_tier = "standard"
+
+    if llm_tier == "compact":
+        priority = [
+            "qwen3:4b",
+            "phi4-mini",
+            "qwen2.5:3b",
+            "llama3.2:3b",
+            "qwen3:8b",
+            "qwen2.5:1.5b",
+            "llama3.2:1b",
+            "qwen3:14b",
+            "gemma4:12b",
+            "qwen2.5:7b",
+            "llama3.1:8b",
+            "qwen3.5:4b",
+            "qwen2.5:0.5b"
+        ]
+    else:
+        priority = [
+            "qwen3:8b",
+            "qwen3:14b",
+            "gemma4:12b",
+            "qwen3:4b",
+            "phi4-mini",
+            "qwen2.5:7b",
+            "llama3.1:8b",
+            "qwen2.5:3b",
+            "llama3.2:3b",
+            "qwen2.5:1.5b",
+            "llama3.2:1b",
+            "qwen3.5:4b",
+            "qwen2.5:0.5b"
+        ]
+
     for p in priority:
         for m in installed:
             if m == p or m.startswith(p + ":") or m.startswith(p):

@@ -47,7 +47,7 @@ const state = {
     deblock_level: "medium",
     pixel_generator: true,
     pixel_generator_mode: "ultra",
-    export_bitrate: "35M"
+    export_bitrate: "14M"
   },
   masterTemplate: null,
   autoApplyMaster: true,
@@ -4763,7 +4763,7 @@ function updateExportProfileLabel() {
   const sharp = state.template.sharpen_amount || 0.75;
   const micro = state.template.micro_texture || 1.2;
   const deblock = state.template.deblock_level || "medium";
-  const bitrate = state.template.export_bitrate || "35M";
+  const bitrate = state.template.export_bitrate || "14M";
   const isPgen = state.template.pixel_generator !== false;
   const pgenMode = (state.template.pixel_generator_mode || "ultra").toUpperCase();
 
