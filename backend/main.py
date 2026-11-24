@@ -5,6 +5,9 @@ import json
 import time
 import subprocess
 import zipfile
+import threading
+import uuid
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -35,20 +38,88 @@ os.makedirs(THUMBNAILS_DIR, exist_ok=True)
 CURRENT_EXPORT_DIR = OUTPUTS_DIR
 
 MASTER_TEMPLATE_FILE = os.path.join(TEMPLATES_DIR, "master_template.json")
+DEFAULT_SUBS_FILE = os.path.join(BASE_DIR, "storage", "default_subtitles.json")
+SESSION_STATE_FILE = os.path.join(TEMP_DIR, "session_state.json")
+
+# Global re-entrant lock for thread-safe state mutations
+STATE_LOCK = threading.RLock()
+
+# Allowed video file extensions for local source selection
+ALLOWED_VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".ts", ".avi", ".m4v"}
+
+# Strict regex for pulling models: starts with alnum, only safe characters, max 80 chars
+MODEL_NAME_REGEX = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,79}$')
+
+def safe_resolve_under(base_dir: str, filename: str) -> Optional[str]:
+    """
+    Safely resolves a filename under base_dir preventing directory traversal,
+    null-byte attacks, and absolute-path escapes.
+    Returns the canonical string path if target is a valid relative file, else None.
+    """
+    if not filename or not isinstance(filename, str):
+        return None
+    if "\x00" in filename or "/" in filename or "\\" in filename:
+        return None
+    try:
+        base = Path(base_dir).resolve()
+        target = (base / filename).resolve()
+        if target.is_relative_to(base) and target.is_file():
+            return str(target)
+    except Exception:
+        return None
+    return None
+
+def require_local_client(request: Request):
+    """
+    Restricts sensitive administrative filesystem / model operations to localhost
+    unless OPENSHORTS_ALLOW_LAN_ADMIN=1 is explicitly enabled.
+    """
+    if os.environ.get("OPENSHORTS_ALLOW_LAN_ADMIN") == "1":
+        return
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(
+            status_code=403,
+            detail="Access restricted: This administrative operation can only be performed from the local host."
+        )
+
+def prune_temp_previews(keep: int = 5):
+    """Prunes older generated preview frames in TEMP_DIR, retaining only the most recent."""
+    try:
+        if not os.path.exists(TEMP_DIR):
+            return
+        files = [
+            os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR)
+            if f.startswith("preview_") and f.endswith(".png")
+        ]
+        if len(files) > keep:
+            files.sort(key=lambda p: os.path.getmtime(p))
+            for old_p in files[:len(files) - keep]:
+                try:
+                    os.remove(old_p)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 app = FastAPI(title="OpenShorts Custom Template Studio", version="1.0.0")
 
+# CORS Configuration: Tightened localhost defaults unless LAN mode is explicitly requested
+if os.environ.get("OPENSHORTS_LAN") == "1":
+    cors_origins = ["*"]
+else:
+    cors_origins = [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000"
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-DEFAULT_SUBS_FILE = os.path.join(BASE_DIR, "storage", "default_subtitles.json")
-
-SESSION_STATE_FILE = os.path.join(TEMP_DIR, "session_state.json")
 
 # In-memory session state - starts clean for user uploaded footage
 CURRENT_STATE: Dict[str, Any] = {
@@ -62,18 +133,21 @@ CURRENT_STATE: Dict[str, Any] = {
 }
 
 def save_session_state():
-    try:
-        data = {
-            "video_path": CURRENT_STATE.get("video_path", ""),
-            "video_meta": CURRENT_STATE.get("video_meta", {}),
-            "subtitles": CURRENT_STATE.get("subtitles", []),
-            "clips": CURRENT_STATE.get("clips", []),
-            "export_dir": CURRENT_EXPORT_DIR
-        }
-        with open(SESSION_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except Exception as e:
-        print(f"Error saving session state: {e}")
+    with STATE_LOCK:
+        try:
+            data = {
+                "video_path": CURRENT_STATE.get("video_path", ""),
+                "video_meta": CURRENT_STATE.get("video_meta", {}),
+                "subtitles": CURRENT_STATE.get("subtitles", []),
+                "clips": CURRENT_STATE.get("clips", []),
+                "export_dir": CURRENT_EXPORT_DIR
+            }
+            tmp_file = f"{SESSION_STATE_FILE}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp_file, SESSION_STATE_FILE)
+        except Exception as e:
+            print(f"Error saving session state: {e}")
 
 def ensure_ollama_daemon():
     """Auto-starts Ollama daemon if not currently running."""
@@ -374,10 +448,8 @@ def process_loaded_video(clean_path: str, is_demo: bool = False):
         )
     
     clean_path = ensure_faststart(clean_path)
-    is_new_video = (CURRENT_STATE.get("video_path") != clean_path)
-    CURRENT_STATE["video_path"] = clean_path
-    CURRENT_STATE["video_meta"] = probe_video(clean_path)
-    dur = CURRENT_STATE["video_meta"].get("duration", 10.0)
+    meta = probe_video(clean_path)
+    dur = meta.get("duration", 10.0)
 
     # 1. Extract source reference frame from the ACTUAL uploaded video for Facecam Reticle
     source_frame_path = os.path.join(TEMP_DIR, "source_frame.jpg")
@@ -393,36 +465,45 @@ def process_loaded_video(clean_path: str, is_demo: bool = False):
     except Exception as e:
         print(f"Frame extraction failed: {e}")
 
-    # 2. Reset subtitles and clips for a newly uploaded / loaded video
-    if is_new_video:
-        CURRENT_STATE["clips"] = []
-        CURRENT_STATE["subtitles"] = []
-        CURRENT_STATE["export_queue"] = []
+    with STATE_LOCK:
+        is_new_video = (CURRENT_STATE.get("video_path") != clean_path)
+        CURRENT_STATE["video_path"] = clean_path
+        CURRENT_STATE["video_meta"] = meta
 
-    if is_demo and os.path.exists(DEFAULT_SUBS_FILE):
-        try:
-            with open(DEFAULT_SUBS_FILE, "r", encoding="utf-8") as f:
-                raw_subs = json.load(f)
-            clean_subs = []
-            for s in raw_subs:
-                sc = dict(s)
-                sc["text"] = re.sub(r'[,.]+', '', sc.get("text", "")).strip()
-                if "words" in sc and sc["words"]:
-                    sc["words"] = [{**w, "word": re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()} for w in sc["words"] if re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()]
-                clean_subs.append(sc)
-            CURRENT_STATE["subtitles"] = clean_subs
-        except Exception:
+        # 2. Reset subtitles and clips for a newly uploaded / loaded video
+        if is_new_video:
+            CURRENT_STATE["clips"] = []
             CURRENT_STATE["subtitles"] = []
+            CURRENT_STATE["export_queue"] = []
 
-    save_session_state()
+        if is_demo and os.path.exists(DEFAULT_SUBS_FILE):
+            try:
+                with open(DEFAULT_SUBS_FILE, "r", encoding="utf-8") as f:
+                    raw_subs = json.load(f)
+                clean_subs = []
+                for s in raw_subs:
+                    sc = dict(s)
+                    sc["text"] = re.sub(r'[,.]+', '', sc.get("text", "")).strip()
+                    if "words" in sc and sc["words"]:
+                        sc["words"] = [{**w, "word": re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()} for w in sc["words"] if re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()]
+                    clean_subs.append(sc)
+                CURRENT_STATE["subtitles"] = clean_subs
+            except Exception:
+                CURRENT_STATE["subtitles"] = []
+
+        save_session_state()
+        res_meta = dict(CURRENT_STATE["video_meta"])
+        res_clips = list(CURRENT_STATE["clips"])
+        res_subs = list(CURRENT_STATE["subtitles"])
+
     import time
     return {
         "status": "success",
         "video_path": clean_path,
         "is_demo": is_demo,
-        "meta": CURRENT_STATE["video_meta"],
-        "clips": CURRENT_STATE["clips"],
-        "subtitles": CURRENT_STATE["subtitles"],
+        "meta": res_meta,
+        "clips": res_clips,
+        "subtitles": res_subs,
         "source_frame": f"/storage/temp/source_frame.jpg?t={time.time()}"
     }
 
@@ -475,15 +556,31 @@ def extract_frame_endpoint(req: Dict[str, Any] = None):
     return {"status": "success", "source_frame": f"/storage/temp/source_frame.jpg?t={time.time()}"}
 
 @app.post("/api/set_source")
-def set_video_source(req: SetSourceReq):
+def set_video_source(req: SetSourceReq, request: Request):
+    require_local_client(request)
     raw_path = req.video_path.strip(' \t\r\n"\'“”')
     clean_path = os.path.normpath(raw_path)
+    if not os.path.isfile(clean_path):
+        raise HTTPException(status_code=400, detail="Source video path does not exist or is not a regular file")
+    ext = os.path.splitext(clean_path)[1].lower()
+    if ext not in ALLOWED_VIDEO_EXTS:
+        raise HTTPException(status_code=400, detail=f"Unsupported video file extension: {ext}. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTS))}")
     return process_loaded_video(clean_path, is_demo=req.is_demo)
 
 @app.post("/api/upload")
 def upload_video(file: UploadFile = File(...)):
-    safe_name = os.path.basename(file.filename)
-    dest_path = os.path.join(UPLOADS_DIR, safe_name)
+    raw_name = file.filename or ""
+    base_name = os.path.basename(raw_name).strip()
+    safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', base_name)
+    if not safe_name or safe_name.strip('._') == "":
+        ext = os.path.splitext(base_name)[1].lower()
+        if not ext or len(ext) > 5 or ext not in ALLOWED_VIDEO_EXTS:
+            ext = ".mp4"
+        safe_name = f"upload_{uuid.uuid4().hex[:8]}{ext}"
+    dest = (Path(UPLOADS_DIR) / safe_name).resolve()
+    if not dest.is_relative_to(Path(UPLOADS_DIR).resolve()):
+        raise HTTPException(status_code=400, detail="Invalid upload filename destination")
+    dest_path = str(dest)
     with open(dest_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
     return process_loaded_video(dest_path, is_demo=False)
@@ -695,61 +792,63 @@ def api_scan_stream_audio(req: ProbeStreamReq):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/factory_reset")
-def api_factory_reset():
+def api_factory_reset(request: Request):
     """
     CLEAN SLATE / FACTORY RESET:
     Wipes all previous session clips, subtitles, uploads, exports, and temporary files.
     Preserves all binaries (bin/) and speech models (models/).
     Prepares the studio for a completely new user.
     """
+    require_local_client(request)
     global CURRENT_STATE, CURRENT_EXPORT_DIR
     try:
-        # 1. Reset in-memory state
-        CURRENT_STATE["video_path"] = ""
-        CURRENT_STATE["video_meta"] = {}
-        CURRENT_STATE["subtitles"] = []
-        CURRENT_STATE["clips"] = []
-        CURRENT_STATE["export_queue"] = []
-        CURRENT_STATE["export_progress"] = {"status": "idle", "current_clip": 0, "total_clips": 0, "percent": 0, "title": ""}
-        CURRENT_STATE["transcribe_progress"] = {"status": "idle", "step": "Ready", "percent": 0}
-        CURRENT_STATE["stream_progress"] = {"status": "idle", "percent": 0, "step": "Ready"}
-        CURRENT_EXPORT_DIR = OUTPUTS_DIR
+        with STATE_LOCK:
+            # 1. Reset in-memory state
+            CURRENT_STATE["video_path"] = ""
+            CURRENT_STATE["video_meta"] = {}
+            CURRENT_STATE["subtitles"] = []
+            CURRENT_STATE["clips"] = []
+            CURRENT_STATE["export_queue"] = []
+            CURRENT_STATE["export_progress"] = {"status": "idle", "current_clip": 0, "total_clips": 0, "percent": 0, "title": ""}
+            CURRENT_STATE["transcribe_progress"] = {"status": "idle", "step": "Ready", "percent": 0}
+            CURRENT_STATE["stream_progress"] = {"status": "idle", "percent": 0, "step": "Ready"}
+            CURRENT_EXPORT_DIR = OUTPUTS_DIR
 
-        # 2. Delete session state file
-        if os.path.exists(SESSION_STATE_FILE):
-            try:
-                os.remove(SESSION_STATE_FILE)
-            except Exception:
-                pass
+            # 2. Delete session state file
+            if os.path.exists(SESSION_STATE_FILE):
+                try:
+                    os.remove(SESSION_STATE_FILE)
+                except Exception:
+                    pass
 
-        # 3. Clean files in storage/uploads, storage/outputs, storage/temp, storage/thumbnails
-        for folder in [UPLOADS_DIR, OUTPUTS_DIR, TEMP_DIR, THUMBNAILS_DIR]:
-            if os.path.exists(folder):
-                for fname in os.listdir(folder):
-                    if fname == ".gitkeep":
-                        continue
-                    fpath = os.path.join(folder, fname)
-                    try:
-                        if os.path.isfile(fpath) or os.path.islink(fpath):
-                            os.remove(fpath)
-                        elif os.path.isdir(fpath):
-                            shutil.rmtree(fpath, ignore_errors=True)
-                    except Exception:
-                        pass
+            # 3. Clean files in storage/uploads, storage/outputs, storage/temp, storage/thumbnails
+            for folder in [UPLOADS_DIR, OUTPUTS_DIR, TEMP_DIR, THUMBNAILS_DIR]:
+                if os.path.exists(folder):
+                    for fname in os.listdir(folder):
+                        if fname == ".gitkeep":
+                            continue
+                        fpath = os.path.join(folder, fname)
+                        try:
+                            if os.path.isfile(fpath) or os.path.islink(fpath):
+                                os.remove(fpath)
+                            elif os.path.isdir(fpath):
+                                shutil.rmtree(fpath, ignore_errors=True)
+                        except Exception:
+                            pass
 
-        # 4. Remove saved master template
-        if os.path.exists(MASTER_TEMPLATE_FILE):
-            try:
-                os.remove(MASTER_TEMPLATE_FILE)
-            except Exception:
-                pass
+            # 4. Remove saved master template
+            if os.path.exists(MASTER_TEMPLATE_FILE):
+                try:
+                    os.remove(MASTER_TEMPLATE_FILE)
+                except Exception:
+                    pass
 
-        # 5. Reload clean demo video if available
-        demo = get_demo_video()
-        demo_path = demo.get("path") if demo else None
-        if demo_path and os.path.exists(demo_path):
-            CURRENT_STATE["video_path"] = demo_path
-            CURRENT_STATE["video_meta"] = probe_video(demo_path)
+            # 5. Reload clean demo video if available
+            demo = get_demo_video()
+            demo_path = demo.get("path") if demo else None
+            if demo_path and os.path.exists(demo_path):
+                CURRENT_STATE["video_path"] = demo_path
+                CURRENT_STATE["video_meta"] = probe_video(demo_path)
 
         return {"status": "success", "message": "Engine completely reset to clean slate. Ready for a new user!"}
     except Exception as e:
@@ -813,7 +912,13 @@ class PullModelReq(BaseModel):
     model_name: str = "qwen3:8b"
 
 @app.post("/api/llm/pull")
-def pull_llm_model(req: PullModelReq):
+def pull_llm_model(req: PullModelReq, request: Request):
+    require_local_client(request)
+    if not req.model_name or not MODEL_NAME_REGEX.match(req.model_name):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid model name. Model name must start with alphanumeric character and contain only alphanumeric, '.', '_', ':', '/', or '-' up to 80 characters."
+        )
     import subprocess
     try:
         subprocess.Popen(["ollama", "pull", req.model_name])
@@ -826,7 +931,8 @@ def get_export_folder():
     return {"status": "success", "path": CURRENT_EXPORT_DIR}
 
 @app.post("/api/set_export_folder")
-def set_export_folder(req: SetExportFolderReq):
+def set_export_folder(req: SetExportFolderReq, request: Request):
+    require_local_client(request)
     global CURRENT_EXPORT_DIR
     raw = req.folder_path.strip(' \t\r\n"\'“”')
     if not raw:
@@ -834,14 +940,16 @@ def set_export_folder(req: SetExportFolderReq):
     clean = os.path.normpath(raw)
     try:
         os.makedirs(clean, exist_ok=True)
-        CURRENT_EXPORT_DIR = clean
-        save_session_state()
+        with STATE_LOCK:
+            CURRENT_EXPORT_DIR = clean
+            save_session_state()
         return {"status": "success", "path": CURRENT_EXPORT_DIR}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cannot create or access folder: {e}")
 
 @app.post("/api/open_folder")
-def open_export_folder():
+def open_export_folder(request: Request):
+    require_local_client(request)
     try:
         target = CURRENT_EXPORT_DIR if os.path.exists(CURRENT_EXPORT_DIR) else OUTPUTS_DIR
         if os.name == "nt":
@@ -1169,7 +1277,9 @@ def update_subtitles(subs: List[Dict[str, Any]]):
         if "words" in sc and sc["words"]:
             sc["words"] = [{**w, "word": re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()} for w in sc["words"] if re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()]
         clean_subs.append(sc)
-    CURRENT_STATE["subtitles"] = clean_subs
+    with STATE_LOCK:
+        CURRENT_STATE["subtitles"] = clean_subs
+        save_session_state()
     return {"status": "success", "count": len(clean_subs)}
 
 @app.post("/api/preview")
@@ -1178,7 +1288,7 @@ def create_preview(req: PreviewReq):
     if not video_path or not os.path.exists(video_path):
         raise HTTPException(status_code=400, detail="No video loaded")
     
-    preview_filename = f"preview_frame.png"
+    preview_filename = f"preview_{uuid.uuid4().hex[:8]}.png"
     preview_output = os.path.join(TEMP_DIR, preview_filename)
     
     try:
@@ -1194,6 +1304,7 @@ def create_preview(req: PreviewReq):
             all_subtitles=subs_to_use,
             video_meta=video_meta
         )
+        prune_temp_previews(keep=5)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview generation failed: {e}")
         
@@ -1201,9 +1312,9 @@ def create_preview(req: PreviewReq):
 
 @app.get("/storage/temp/{filename}")
 def serve_temp(filename: str):
-    file_path = os.path.join(TEMP_DIR, filename)
-    if os.path.exists(file_path):
-        return FileResponse(file_path)
+    resolved = safe_resolve_under(TEMP_DIR, filename)
+    if resolved:
+        return FileResponse(resolved)
     raise HTTPException(status_code=404, detail="File not found")
 
 @app.post("/api/export_clip")
@@ -1576,22 +1687,25 @@ async def serve_current_video(request: Request):
 
 @app.api_route("/media/output/{filename}", methods=["GET", "HEAD"])
 def serve_output_file(filename: str):
-    safe_name = os.path.basename(filename)
     for d in (CURRENT_EXPORT_DIR, OUTPUTS_DIR):
-        p = os.path.join(d, safe_name)
-        if os.path.exists(p):
-            return FileResponse(p)
+        if not d or not os.path.exists(d):
+            continue
+        resolved = safe_resolve_under(d, filename)
+        if resolved:
+            return FileResponse(resolved)
     raise HTTPException(status_code=404, detail="Media file not found")
 
 @app.get("/media/thumbnail/{clip_id}")
 def serve_clip_thumbnail(clip_id: str):
     safe_name = os.path.basename(clip_id)
-    thumb_path = os.path.join(THUMBNAILS_DIR, f"{safe_name}_thumb.jpg")
-    if os.path.exists(thumb_path):
-        return FileResponse(thumb_path, media_type="image/jpeg")
-    alt_path = os.path.join(THUMBNAILS_DIR, f"{safe_name}.jpg")
-    if os.path.exists(alt_path):
-        return FileResponse(alt_path, media_type="image/jpeg")
+    candidates = [f"{safe_name}_thumb.jpg", f"{safe_name}.jpg", safe_name]
+    for cand in candidates:
+        for d in (THUMBNAILS_DIR, CURRENT_EXPORT_DIR, OUTPUTS_DIR):
+            if not d or not os.path.exists(d):
+                continue
+            resolved = safe_resolve_under(d, cand)
+            if resolved:
+                return FileResponse(resolved, media_type="image/jpeg")
     raise HTTPException(status_code=404, detail="Thumbnail cover not found")
 
 @app.get("/api/download_zip")
@@ -1599,13 +1713,18 @@ def download_zip(file: Optional[str] = None):
     if file:
         safe_f = os.path.basename(file)
         for d in (CURRENT_EXPORT_DIR, OUTPUTS_DIR):
-            target = os.path.join(d, safe_f)
-            if os.path.exists(target):
-                return FileResponse(target, filename=safe_f, media_type="application/zip")
+            if not d or not os.path.exists(d):
+                continue
+            resolved = safe_resolve_under(d, safe_f)
+            if resolved:
+                return FileResponse(resolved, filename=safe_f, media_type="application/zip")
     else:
         target = CURRENT_STATE.get("last_batch_zip", "")
-        if target and os.path.exists(target):
-            return FileResponse(target, filename=os.path.basename(target), media_type="application/zip")
+        if target and os.path.isfile(target):
+            target_path = Path(target).resolve()
+            for d in (CURRENT_EXPORT_DIR, OUTPUTS_DIR):
+                if d and os.path.exists(d) and target_path.is_relative_to(Path(d).resolve()):
+                    return FileResponse(str(target_path), filename=target_path.name, media_type="application/zip")
     raise HTTPException(status_code=404, detail="ZIP file not found")
 
 @app.post("/api/create_zip_from_outputs")

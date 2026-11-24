@@ -98,6 +98,19 @@ if !errorlevel! neq 0 (
     echo [WARN] Bootstrap diagnostic encountered an issue, but attempting launch...
 )
 
+:: Parse arguments for LAN mode
+set "IS_LAN=0"
+if /i "%~1"=="--lan" set "IS_LAN=1"
+if /i "%~2"=="--lan" set "IS_LAN=1"
+
+if "!IS_LAN!"=="1" (
+    set "OPENSHORTS_LAN=1"
+    set "HOST_BIND=0.0.0.0"
+) else (
+    set "OPENSHORTS_LAN=0"
+    set "HOST_BIND=127.0.0.1"
+)
+
 :: 5. Display Access URLs
 echo.
 echo =====================================================================
@@ -105,12 +118,17 @@ echo                     SERVER ACCESS URLS
 echo =====================================================================
 echo   [Local PC]    http://localhost:8000
 echo   [Local PC]    http://127.0.0.1:8000
-for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
-    for /f "tokens=1" %%b in ("%%a") do (
-        echo   [LAN Mobile]  http://%%b:8000
+if "!IS_LAN!"=="1" (
+    for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
+        for /f "tokens=1" %%b in ("%%a") do (
+            echo   [LAN Mobile]  http://%%b:8000
+        )
     )
+    echo                 [LAN mode enabled: Access from any phone or PC on Wi-Fi]
+) else (
+    echo.
+    echo   Tip: Run "run.bat --lan" to enable Wi-Fi / mobile LAN access across your local network
 )
-echo                 [Access from any phone, laptop, or PC on this Wi-Fi]
 echo =====================================================================
 echo.
 
@@ -119,9 +137,13 @@ echo [*] Launching OpenShorts Studio in your default browser...
 start "" "http://localhost:8000"
 
 :: 7. Start Uvicorn Server
-echo [*] Starting OpenShorts server on http://127.0.0.1:8000 ...
+if "!IS_LAN!"=="1" (
+    echo [*] Starting OpenShorts server on http://0.0.0.0:8000 [LAN Enabled]...
+) else (
+    echo [*] Starting OpenShorts server on http://127.0.0.1:8000 [Localhost Only]...
+)
 echo     [Keep this window open while using the Studio. Press Ctrl+C to stop.]
 echo.
-"!ACTIVE_PY!" -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+"!ACTIVE_PY!" -m uvicorn backend.main:app --host !HOST_BIND! --port 8000
 
 pause
