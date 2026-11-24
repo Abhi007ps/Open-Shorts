@@ -97,113 +97,82 @@ Style: Default,{font_family},{font_size},{ass_primary},{ass_highlight},{ass_outl
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"""
     lines = [header]
 
+    valid_segs = []
     for seg in segments:
-        start_t = max(0.0, float(seg.get("start", 0)) + sync_offset)
-        end_t = max(start_t + 0.1, float(seg.get("end", 0)) + sync_offset)
-        text = re.sub(r'[,.]+', '', seg.get("text", "")).strip()
-        if not text or end_t <= start_t:
-            continue
-        
-        if is_uppercase:
-            text = text.upper()
-        
+        s_t = max(0.0, float(seg.get("start", 0)) + sync_offset)
+        e_t = max(s_t + 0.05, float(seg.get("end", 0)) + sync_offset)
+        raw_text = re.sub(r'[,.]+', '', str(seg.get("text", ""))).strip()
+        if raw_text and e_t > s_t:
+            valid_segs.append({
+                "start": s_t,
+                "end": e_t,
+                "text": raw_text.upper() if is_uppercase else raw_text,
+                "words": seg.get("words", [])
+            })
+    valid_segs.sort(key=lambda s: s["start"])
+    # Clamp end so segments never overlap
+    for k in range(len(valid_segs) - 1):
+        if valid_segs[k]["end"] > valid_segs[k + 1]["start"]:
+            valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.04, valid_segs[k + 1]["start"])
+
+    for seg in valid_segs:
+        start_t = seg["start"]
+        end_t = seg["end"]
+        text = seg["text"]
         words = seg.get("words", [])
         start_str = format_ass_timestamp(start_t)
         end_str = format_ass_timestamp(end_t)
         neon_glow = r"{\blur4}" if style_preset == "neon" else ""
+
+        cleaned_words = []
+        if words:
+            for w in words:
+                w_txt = re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()
+                if w_txt:
+                    w_s = float(w.get("start", start_t)) + sync_offset
+                    w_e = float(w.get("end", end_t)) + sync_offset
+                    cleaned_words.append({
+                        "word": w_txt.upper() if is_uppercase else w_txt,
+                        "start": max(start_t, min(end_t, w_s)),
+                        "end": max(start_t, min(end_t, w_e))
+                    })
         
         # 1. Multi-word segment with active karaoke word highlighting
-        if words and len(words) > 1 and style_preset in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
-            total_w = len(words)
-            if style_preset == "speed":
-                # Smooth Reference Style (IShowSpeed / C:\ppp): Zero bounce, rock-solid anchor, crisp color highlight
-                for i, w in enumerate(words):
-                    w_start = float(w.get("start", start_t)) + sync_offset
-                    w_end = float(w.get("end", end_t)) + sync_offset
-                    w_start = max(start_t, min(end_t - 0.05, w_start))
-                    w_end = max(w_start + 0.08, min(end_t, w_end))
-                    w_start_str = format_ass_timestamp(w_start)
-                    w_end_str = format_ass_timestamp(w_end)
-                    formatted_words = []
-                    for j, word_item in enumerate(words):
-                        raw_w = re.sub(r'[,.]+', '', word_item.get("word", "")).strip()
-                        if is_uppercase:
-                            raw_w = raw_w.upper()
-                        if j == i:
-                            formatted_words.append(f"{{\\c{ass_highlight}}}{raw_w}{{\\c{ass_primary}}}")
-                        else:
-                            formatted_words.append(f"{{\\c{ass_primary}}}{raw_w}")
-                    lines.append(f"Dialogue: 0,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{' '.join(formatted_words)}")
-            else:
-                for i, w in enumerate(words):
-                    # Precise word boundaries: highlight strictly when spoken, release when word ends
-                    w_start = float(w.get("start", start_t)) + sync_offset
-                    w_end = float(w.get("end", end_t)) + sync_offset
-                    
-                    # Clamp within segment boundaries
-                    w_start = max(start_t, min(end_t - 0.05, w_start))
-                    w_end = max(w_start + 0.10, min(end_t, w_end))
-                    w_dur = w_end - w_start
-                    
-                    # Active Word Pop Bounce Animation (Hormozi / MrBeast style)
-                    if w_dur >= 0.16:
-                        pop_dur = min(0.11, w_dur * 0.36)
-                        t_pop_end = w_start + pop_dur
-                        w_pop_start_str = format_ass_timestamp(w_start)
-                        w_pop_end_str = format_ass_timestamp(t_pop_end)
-                        w_settle_end_str = format_ass_timestamp(w_end)
-                        
-                        # Pop Phase: active word popped 118%
-                        words_pop = []
-                        for j, word_item in enumerate(words):
-                            raw_w = re.sub(r'[,.]+', '', word_item.get("word", "")).strip()
-                            if is_uppercase:
-                                raw_w = raw_w.upper()
-                            if j == i:
-                                words_pop.append(f"{{\\fscx118\\fscy118\\c{ass_highlight}}}{raw_w}{{\\fscx100\\fscy100\\c{ass_primary}}}")
-                            else:
-                                words_pop.append(f"{{\\fscx100\\fscy100\\c{ass_primary}}}{raw_w}")
-                        lines.append(f"Dialogue: 0,{w_pop_start_str},{w_pop_end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{' '.join(words_pop)}")
-                        
-                        # Settle Phase: active word settles to 104%
-                        words_settle = []
-                        for j, word_item in enumerate(words):
-                            raw_w = re.sub(r'[,.]+', '', word_item.get("word", "")).strip()
-                            if is_uppercase:
-                                raw_w = raw_w.upper()
-                            if j == i:
-                                words_settle.append(f"{{\\fscx104\\fscy104\\c{ass_highlight}}}{raw_w}{{\\fscx100\\fscy100\\c{ass_primary}}}")
-                            else:
-                                words_settle.append(f"{{\\fscx100\\fscy100\\c{ass_primary}}}{raw_w}")
-                        lines.append(f"Dialogue: 0,{w_pop_end_str},{w_settle_end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{' '.join(words_settle)}")
-                    else:
-                        # Short word (< 160ms): single punchy pop at 115%
-                        w_start_str = format_ass_timestamp(w_start)
-                        w_end_str = format_ass_timestamp(w_end)
-                        formatted_words = []
-                        for j, word_item in enumerate(words):
-                            raw_w = re.sub(r'[,.]+', '', word_item.get("word", "")).strip()
-                            if is_uppercase:
-                                raw_w = raw_w.upper()
-                            if j == i:
-                                formatted_words.append(f"{{\\fscx115\\fscy115\\c{ass_highlight}}}{raw_w}{{\\fscx100\\fscy100\\c{ass_primary}}}")
-                            else:
-                                formatted_words.append(f"{{\\fscx100\\fscy100\\c{ass_primary}}}{raw_w}")
-                        lines.append(f"Dialogue: 0,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{' '.join(formatted_words)}")
+        if len(cleaned_words) > 1 and style_preset in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
+            num_w = len(cleaned_words)
+            # Build strictly monotonic, gapless onset timestamps across the entire phrase
+            w_starts = [start_t]
+            for i in range(1, num_w):
+                s_i = max(cleaned_words[i]["start"], w_starts[i - 1] + 0.04)
+                s_i = min(s_i, end_t - 0.04 * (num_w - i))
+                w_starts.append(s_i)
 
-        # 2. Single word at a time mode (high-energy punchy highlight with pop bounce)
-        elif words and len(words) == 1:
-            raw_w = re.sub(r'[,.]+', '', words[0].get("word", text)).strip()
-            if is_uppercase:
-                raw_w = raw_w.upper()
-            w_dur = end_t - start_t
-            if w_dur >= 0.16:
-                pop_dur = min(0.12, w_dur * 0.38)
-                t_pop_end = start_t + pop_dur
-                lines.append(f"Dialogue: 0,{format_ass_timestamp(start_t)},{format_ass_timestamp(t_pop_end)},Default,,0,0,0,,{pos_tag}{neon_glow}{{\\fscx122\\fscy122\\c{ass_highlight}}}{raw_w}")
-                lines.append(f"Dialogue: 0,{format_ass_timestamp(t_pop_end)},{format_ass_timestamp(end_t)},Default,,0,0,0,,{pos_tag}{neon_glow}{{\\fscx100\\fscy100\\c{ass_highlight}}}{raw_w}")
-            else:
-                lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{{\\fscx116\\fscy116\\c{ass_highlight}}}{raw_w}")
+            for i in range(num_w):
+                disp_start = w_starts[i]
+                disp_end = w_starts[i + 1] if (i + 1 < num_w) else end_t
+                disp_end = max(disp_start + 0.04, disp_end)
+                w_start_str = format_ass_timestamp(disp_start)
+                w_end_str = format_ass_timestamp(disp_end)
+
+                # Keep multi-word line horizontally rock-solid: highlight purely via color.
+                # Only on word 0 of non-speed presets apply a subtle smooth whole-line entrance pop.
+                entrance_tag = r"{\fscx106\fscy106\t(0,80,\fscx100\fscy100)}" if (i == 0 and style_preset != "speed") else ""
+
+                formatted_words = []
+                for j, word_item in enumerate(cleaned_words):
+                    if j == i:
+                        formatted_words.append(f"{{\\c{ass_highlight}}}{word_item['word']}{{\\c{ass_primary}}}")
+                    else:
+                        formatted_words.append(word_item['word'])
+                
+                line_text = " ".join(formatted_words)
+                lines.append(f"Dialogue: 0,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{entrance_tag}{{\\c{ass_primary}}}{line_text}")
+
+        # 2. Single word at a time mode (single smooth Dialogue event with ASS \\t interpolation)
+        elif len(cleaned_words) == 1:
+            raw_w = cleaned_words[0]["word"]
+            pop_tag = "" if style_preset == "speed" else r"{\fscx114\fscy114\t(0,90,\fscx100\fscy100)}"
+            lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{pop_tag}{{\\c{ass_highlight}}}{raw_w}")
 
         # 3. Simple text line with custom primary color and optional glow
         else:

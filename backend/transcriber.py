@@ -173,28 +173,12 @@ def extract_audio_wav(
     if audio_track is not None and audio_track >= 0:
         cmd += ["-map", f"0:a:{audio_track}?"]
     
-    # Audio filters: Professional Streamer Microphone Isolation Pipeline
-    voice_filter_parts = ["asetpts=PTS-STARTPTS"]
+    # Audio filters: Clean Whisper-friendly Vocal Normalization Pipeline
     if streamer_voice_focus:
-        # Audio filters: Professional CapCut-Grade Streamer Microphone Isolation Pipeline
-        # 1. stereotools: cancel spatial stereo side channel (rejects stereo game reflections & panned ambient audio)
-        # 2. pan mono center: sum Left and Right channels into pure mono center
-        # 3. highpass 85Hz & lowpass 7500Hz: preserves full vocal frequencies from chest baritone to sibilance
-        # 4. equalizer at 240Hz (+4.5dB) & 2600Hz (+4.5dB): boosts core human speech formant intelligibility
-        # 5. afftdn: adaptive FFT spectral denoiser removing background fan & PC hum
-        # 6. agate (-32dB threshold): transparent downward expander, keeps quiet words and phrase endings
-        # 7. dynaudnorm: dynamic audio normalizer brings quiet whispers up to clear listening volume for 100% Whisper accuracy
-        voice_filter_parts.extend([
-            "stereotools=mlev=1.0:slev=0.015625:mpan=0.0",
-            "pan=mono|c0=0.5*c0+0.5*c1",
-            "highpass=f=85,lowpass=f=7500",
-            "equalizer=f=240:t=q:w=1.6:g=4.5",
-            "equalizer=f=2600:t=q:w=1.4:g=4.5",
-            "afftdn=nf=-24:tn=1",
-            "agate=threshold=-32dB:ratio=2.5:range=-24dB:attack=4:release=160",
-            "dynaudnorm=f=75:g=15:p=0.92:m=8.0"
-        ])
-    cmd += ["-af", ",".join(voice_filter_parts)]
+        voice_filter = "asetpts=PTS-STARTPTS,pan=mono|c0=0.5*c0+0.5*c1,highpass=f=80,lowpass=f=7800,dynaudnorm=f=150:g=15:p=0.90:m=5.0"
+    else:
+        voice_filter = "asetpts=PTS-STARTPTS"
+    cmd += ["-af", voice_filter]
         
     cmd += [
         "-acodec", "pcm_s16le",
@@ -248,12 +232,25 @@ def extract_audio_wav(
 
     return output_wav
 
+def get_dtw_preset(model_path: str) -> Optional[str]:
+    """Derives DTW model preset from model_path basename (e.g. ggml-base.en.bin -> base.en)."""
+    if not model_path:
+        return None
+    base = os.path.basename(model_path).lower()
+    base = re.sub(r'^ggml-', '', base)
+    base = re.sub(r'\.bin$', '', base)
+    presets = ["tiny.en", "tiny", "base.en", "base", "small.en", "small", "medium.en", "medium", "large-v1", "large-v2", "large-v3", "large"]
+    for p in presets:
+        if base == p or base.startswith(p):
+            return p
+    return None
+
 def parse_tokens_to_words(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Reconstructs exact word boundaries and timestamps from Whisper -ojf full token outputs.
-    Uses millisecond integer offsets for exact acoustic alignment, merges BPE subwords,
-    completely strips full stops (.) and commas (,), suppresses consecutive repetitive
-    hallucinations, and clamps word highlights to prevent timing drift across pauses.
+    Uses native DTW token timestamps and millisecond integer offsets for exact acoustic alignment,
+    merges BPE subwords, completely strips full stops (.) and commas (,), suppresses consecutive
+    repetitive hallucinations, and clamps word highlights to prevent timing drift across pauses.
     """
     words = []
     current_word = ""
@@ -312,17 +309,28 @@ def parse_tokens_to_words(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, 
             if not raw or raw.startswith("[") or (raw.startswith("(") and raw.endswith(")")) or "<|" in raw:
                 continue
             
-            # Prioritize exact integer millisecond offsets from whisper.cpp
+            # Prioritize DTW token timestamp (centiseconds -> seconds) if available, else millisecond offsets
             offsets = tok.get("offsets", {})
             if "from" in offsets and "to" in offsets and offsets["from"] is not None:
-                s_sec = float(offsets["from"]) / 1000.0
-                e_sec = float(offsets["to"]) / 1000.0
+                offset_s = float(offsets["from"]) / 1000.0
+                offset_e = float(offsets["to"]) / 1000.0
             else:
                 ts = tok.get("timestamps", {})
                 t_from = ts.get("from", "00:00:00,000")
                 t_to = ts.get("to", "00:00:00,000")
-                s_sec = parse_time_str(t_from)
-                e_sec = parse_time_str(t_to)
+                offset_s = parse_time_str(t_from)
+                offset_e = parse_time_str(t_to)
+
+            t_dtw_val = tok.get("t_dtw", -1)
+            if t_dtw_val is not None and float(t_dtw_val) >= 0:
+                dtw_s = float(t_dtw_val) / 100.0
+                if abs(dtw_s - offset_s) <= 1.2:
+                    s_sec = dtw_s
+                else:
+                    s_sec = offset_s
+            else:
+                s_sec = offset_s
+            e_sec = max(s_sec + 0.06, offset_e)
 
             is_new_word = raw.startswith(" ") or current_word == ""
             clean_text = re.sub(r"<\|.*?\|>", "", raw).strip()
@@ -351,11 +359,11 @@ def parse_tokens_to_words(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, 
                         words.append({
                             "word": final_w,
                             "start": round(w_start, 3),
-                            "end": round(max(w_start + 0.08, w_end or (w_start + 0.15)), 3)
+                            "end": round(max(w_start + 0.06, w_end or (w_start + 0.12)), 3)
                         })
                 current_word = clean_text
                 w_start = s_sec
-                w_end = max(s_sec + 0.08, e_sec)
+                w_end = max(s_sec + 0.06, e_sec)
             else:
                 current_word += clean_text
                 w_end = max(w_end or e_sec, e_sec)
@@ -366,20 +374,20 @@ def parse_tokens_to_words(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, 
             words.append({
                 "word": final_w,
                 "start": round(w_start, 3),
-                "end": round(max(w_start + 0.08, w_end or (w_start + 0.15)), 3)
+                "end": round(max(w_start + 0.06, w_end or (w_start + 0.12)), 3)
             })
         
-    # Second-pass anti-drift clamping: ensure each word never bleeds past the start of the next word
+    # Second-pass anti-drift clamping: ensure each word cleanly hands off to next word's start
     clamped_words = []
     for i, w in enumerate(words):
         w_item = dict(w)
         if i + 1 < len(words):
             next_start = words[i + 1]["start"]
-            if next_start > w_item["start"]:
+            if next_start >= w_item["start"] + 0.04:
                 w_item["end"] = min(w_item["end"], next_start)
-        # Enforce minimum duration of 0.08s
+        # Enforce minimum duration of 0.06s
         if w_item["end"] <= w_item["start"]:
-            w_item["end"] = round(w_item["start"] + 0.08, 3)
+            w_item["end"] = round(w_item["start"] + 0.06, 3)
         clamped_words.append(w_item)
 
     return clamped_words
@@ -562,6 +570,52 @@ def align_words_to_acoustic_energy(
         print(f"Notice: Acoustic energy alignment fallback: {e}")
         return words
 
+def sanitize_word_timings(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Non-destructive timing sanitizer:
+    1. Completely strips punctuation [,. ]+.
+    2. Drops obvious Whisper stutter loops (identical word repeated 3+ times within 0.6s).
+    3. Enforces monotonic non-overlapping timestamps and guarantees a minimum readable word duration (>= 0.06s).
+    Preserves quiet dialogue without dropping words based on acoustic silence or scream peaks.
+    """
+    if not words:
+        return []
+    cleaned = []
+    for w in words:
+        txt = re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()
+        if txt:
+            cleaned.append({
+                "word": txt,
+                "start": max(0.0, float(w.get("start", 0))),
+                "end": max(0.0, float(w.get("end", 0)))
+            })
+    # Drop obvious Whisper stutter loops (identical word repeated 3+ times within 0.6s)
+    deduped = []
+    for i, w in enumerate(cleaned):
+        norm = w["word"].lower()
+        if len(deduped) >= 2:
+            if norm == deduped[-1]["word"].lower() == deduped[-2]["word"].lower():
+                if (w["start"] - deduped[-2]["start"]) < 0.6:
+                    continue
+        deduped.append(w)
+
+    sanitized = []
+    last_end = 0.0
+    for i, w in enumerate(deduped):
+        s = max(last_end, float(w["start"]))
+        e = max(s + 0.06, float(w["end"]))
+        if i + 1 < len(deduped):
+            next_s = float(deduped[i + 1]["start"])
+            if next_s > s:
+                e = max(s + 0.04, min(e, next_s))
+        sanitized.append({
+            "word": w["word"],
+            "start": round(s, 3),
+            "end": round(max(s + 0.06, e), 3)
+        })
+        last_end = round(max(s + 0.06, e), 3)
+    return sanitized
+
 def group_words_into_segments(
     words: List[Dict[str, Any]], 
     words_per_line: int = 3
@@ -673,122 +727,142 @@ def transcribe_video(
     if progress_callback:
         progress_callback("Extracting 16kHz audio & applying speech normalization...", 15)
 
-    # 1. Extract audio (full or clip slice with streamer voice focus and accurate zero-drift seek)
-    wav_path = extract_audio_wav(
-        video_path, 
-        start_time=start_time, 
-        duration=duration,
-        streamer_voice_focus=streamer_voice_focus,
-        audio_track=audio_track
-    )
-    base_out = os.path.splitext(wav_path)[0] + "_trans"
-    
-    if progress_callback:
-        progress_callback("Running neural speech recognition (Whisper AI)...", 45)
-
-    # Guarantee WAV is non-empty and has readable PCM frames before invoking Whisper to avoid miniaudio decoding crash (exit 11)
-    need_silent_gen = False
-    if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 512:
-        need_silent_gen = True
-    else:
-        try:
-            with wave.open(wav_path, "rb") as wf:
-                if wf.getnframes() < 80:
-                    need_silent_gen = True
-        except Exception:
-            need_silent_gen = True
-
-    if need_silent_gen:
-        print("[WARN] WAV file is missing, < 512 bytes, or unreadable. Generating valid silent audio frames.")
-        create_silent_wav(wav_path, max(2.0, duration or 2.0))
-
-    # 2. Run whisper-cli with dynamic CPU thread scaling, anti-hallucination bounds, and token timestamping
-    cpu_info = get_cpu_info()
-    whisper_threads = str(cpu_info.get("whisper_threads", 4))
-    cmd = [
-        WHISPER_CLI,
-        "-m", model_path,
-        "-f", wav_path,
-        "-ojf", # output full token JSON
-        "-osrt",
-        "-of", base_out,
-        "-t", whisper_threads,
-        "-bo", "1", # Optimal fast decoding on multi-core CPU
-        "-bs", "1", 
-        "-mc", "48", # Semantic context bounds: maintains conversational grammar without cross-scene drift
-        "-nf", # No fallback: stops temperature looping and hallucinations on silence
-        "-wt", "0.01", # Word timestamp probability threshold
-        "-sow", # Split on words
-        "-sns", # Suppress non-speech tokens
-        "-nth", "0.60", # Speech threshold: preserves quiet words and whispered speech
-        "-lpt", "-0.70", # Logprob threshold
-        "-et", "2.60", # Entropy threshold: rejects repetitive low-information hallucination cycles
-        "-np" # No console flooding: prevents Windows pipe buffer stalls
-    ]
-    if language and language != "auto":
-        cmd += ["-l", language]
-    elif language == "auto" and "tiny.en" not in model_path and "base.en" not in model_path:
-        cmd += ["-l", "auto"]
+    wav_path = None
+    json_path = None
+    srt_path = None
 
     try:
-        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            print(f"[WARN] Whisper pass 1 returned exit {res.returncode}: {res.stderr.strip() if res.stderr else ''}")
-            # Retry with minimal parameters
-            simple_cmd = [
-                WHISPER_CLI,
-                "-m", model_path,
-                "-f", wav_path,
-                "-ojf",
-                "-osrt",
-                "-of", base_out,
-                "-t", whisper_threads
-            ]
-            res2 = subprocess.run(simple_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-            if res2.returncode != 0:
-                print(f"[WARN] Whisper fallback also exited with {res2.returncode}. Returning empty subtitles for silent/unrecognized audio.")
-                return []
-    except Exception as exc:
-        print(f"[WARN] Whisper execution encountered error: {exc}. Returning empty subtitles.")
-        return []
-    
-    json_path = f"{base_out}.json"
-    srt_path = f"{base_out}.srt"
-    
-    raw_words = []
-    if os.path.exists(json_path):
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            raw_segments = data.get("transcription", [])
-            raw_words = parse_tokens_to_words(raw_segments)
-        except Exception as e:
-            print(f"Error parsing json tokens: {e}")
-            
-    # Fallback if no words extracted from tokens: parse SRT
-    if not raw_words and os.path.exists(srt_path):
-        srt_segments = parse_srt_file(srt_path)
-        for seg in srt_segments:
-            raw_words.extend(seg.get("words", []))
-
-    if progress_callback:
-        progress_callback("Applying 5ms sub-frame acoustic attack & release alignment...", 85)
-
-    # 3. Automatic Acoustic Energy Onset Alignment & 5ms Attack Snapping (CapCut / Premiere Pro VAD Snapping)
-    if raw_words and os.path.exists(wav_path):
-        raw_words = align_words_to_acoustic_energy(raw_words, wav_path)
-
-    if progress_callback:
-        progress_callback("Formatting CapCut word chunks & karaoke highlights...", 98)
-
-    # 4. Group extracted words into user's requested words_per_line (1, 2, 3, 4, etc.)
-    segments = group_words_into_segments(raw_words, words_per_line=words_per_line)
-    
-    # Final fallback if still empty
-    if not segments and os.path.exists(srt_path):
-        segments = parse_srt_file(srt_path)
+        # 1. Extract audio (full or clip slice with streamer voice focus and accurate zero-drift seek)
+        wav_path = extract_audio_wav(
+            video_path, 
+            start_time=start_time, 
+            duration=duration,
+            streamer_voice_focus=streamer_voice_focus,
+            audio_track=audio_track
+        )
+        base_out = os.path.splitext(wav_path)[0] + "_trans"
+        json_path = f"{base_out}.json"
+        srt_path = f"{base_out}.srt"
         
-    return segments
+        if progress_callback:
+            progress_callback("Running neural speech recognition (Whisper AI)...", 45)
+
+        # Guarantee WAV is non-empty and has readable PCM frames before invoking Whisper to avoid miniaudio decoding crash (exit 11)
+        need_silent_gen = False
+        if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 512:
+            need_silent_gen = True
+        else:
+            try:
+                with wave.open(wav_path, "rb") as wf:
+                    if wf.getnframes() < 80:
+                        need_silent_gen = True
+            except Exception:
+                need_silent_gen = True
+
+        if need_silent_gen:
+            print("[WARN] WAV file is missing, < 512 bytes, or unreadable. Generating valid silent audio frames.")
+            create_silent_wav(wav_path, max(2.0, duration or 2.0))
+
+        # 2. Run whisper-cli with dynamic CPU thread scaling, anti-hallucination bounds, and DTW timestamping
+        cpu_info = get_cpu_info()
+        whisper_threads = str(cpu_info.get("whisper_threads", 4))
+        bo_val = "2" if (duration is not None and duration <= 120) else "1"
+        bs_val = "2" if (duration is not None and duration <= 120) else "1"
+
+        cmd = [
+            WHISPER_CLI,
+            "-m", model_path,
+            "-f", wav_path,
+            "-ojf", # output full token JSON
+            "-osrt",
+            "-of", base_out,
+            "-t", whisper_threads,
+            "-bo", bo_val,
+            "-bs", bs_val, 
+            "-mc", "48", # Semantic context bounds: maintains conversational grammar without cross-scene drift
+            "-nf", # No fallback: stops temperature looping and hallucinations on silence
+            "-wt", "0.01", # Word timestamp probability threshold
+            "-sow", # Split on words
+            "-sns", # Suppress non-speech tokens
+            "-nth", "0.60", # Speech threshold: preserves quiet words and whispered speech
+            "-lpt", "-0.70", # Logprob threshold
+            "-et", "2.60", # Entropy threshold: rejects repetitive low-information hallucination cycles
+            "-np" # No console flooding: prevents Windows pipe buffer stalls
+        ]
+        dtw_preset = get_dtw_preset(model_path)
+        if dtw_preset:
+            cmd += ["-dtw", dtw_preset, "-nfa"]
+
+        if language and language != "auto":
+            cmd += ["-l", language]
+        elif language == "auto" and "tiny.en" not in model_path and "base.en" not in model_path:
+            cmd += ["-l", "auto"]
+
+        try:
+            res = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            if res.returncode != 0:
+                print(f"[WARN] Whisper pass 1 returned exit {res.returncode}: {res.stderr.strip() if res.stderr else ''}")
+                # Retry with minimal parameters (without -dtw or -nfa in case of version compatibility)
+                simple_cmd = [
+                    WHISPER_CLI,
+                    "-m", model_path,
+                    "-f", wav_path,
+                    "-ojf",
+                    "-osrt",
+                    "-of", base_out,
+                    "-t", whisper_threads
+                ]
+                res2 = subprocess.run(simple_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                if res2.returncode != 0:
+                    print(f"[WARN] Whisper fallback also exited with {res2.returncode}. Returning empty subtitles for silent/unrecognized audio.")
+                    return []
+        except Exception as exc:
+            print(f"[WARN] Whisper execution encountered error: {exc}. Returning empty subtitles.")
+            return []
+        
+        raw_words = []
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                raw_segments = data.get("transcription", [])
+                raw_words = parse_tokens_to_words(raw_segments)
+            except Exception as e:
+                print(f"Error parsing json tokens: {e}")
+                
+        # Fallback if no words extracted from tokens: parse SRT
+        if not raw_words and os.path.exists(srt_path):
+            srt_segments = parse_srt_file(srt_path)
+            for seg in srt_segments:
+                raw_words.extend(seg.get("words", []))
+
+        if progress_callback:
+            progress_callback("Sanitizing word timings & zero-blink alignment...", 85)
+
+        # 3. Sanitize word timings (non-destructive, zero-blink, no quiet speech dropping)
+        if raw_words:
+            raw_words = sanitize_word_timings(raw_words)
+
+        if progress_callback:
+            progress_callback("Formatting CapCut word chunks & karaoke highlights...", 98)
+
+        # 4. Group extracted words into user's requested words_per_line (1, 2, 3, 4, etc.)
+        segments = group_words_into_segments(raw_words, words_per_line=words_per_line)
+        
+        # Final fallback if still empty
+        if not segments and os.path.exists(srt_path):
+            segments = parse_srt_file(srt_path)
+            
+        return segments
+
+    finally:
+        # Clean up temporary WAV and Whisper output files so storage/temp never leaks
+        for p in [wav_path, json_path, srt_path]:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
 def parse_srt_file(srt_path: str) -> List[Dict[str, Any]]:
     """Parses standard SRT file into segments list, removing full stops (.) and commas (,)."""

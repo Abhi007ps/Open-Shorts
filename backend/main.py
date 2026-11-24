@@ -859,30 +859,30 @@ def run_transcription(req: TranscribeReq):
             "total_clips": 1
         }
         
-        if req.start_time is not None and req.duration is not None:
+        if req_start is not None and req_dur is not None:
             # Shift transcribed clip timestamps to match the master stream timeline
             shifted = []
             for s in subtitles:
                 s_copy = dict(s)
-                s_copy["start"] = round(float(s["start"]) + req.start_time, 3)
-                s_copy["end"] = round(float(s["end"]) + req.start_time, 3)
+                s_copy["start"] = round(float(s["start"]) + req_start, 3)
+                s_copy["end"] = round(float(s["end"]) + req_start, 3)
                 if "words" in s and s["words"]:
                     s_copy["words"] = [
                         {
                             **w, 
-                            "start": round(float(w.get("start", 0)) + req.start_time, 3), 
-                            "end": round(float(w.get("end", 0)) + req.start_time, 3)
+                            "start": round(float(w.get("start", 0)) + req_start, 3), 
+                            "end": round(float(w.get("end", 0)) + req_start, 3)
                         }
                         for w in s["words"]
                     ]
                 shifted.append(s_copy)
             
             # Merge clip subtitles into existing list
-            existing = [s for s in CURRENT_STATE["subtitles"] if s.get("end", 0) <= req.start_time or s.get("start", 0) >= (req.start_time + req.duration)]
+            existing = [s for s in CURRENT_STATE["subtitles"] if s.get("end", 0) <= req_start or s.get("start", 0) >= (req_start + req_dur)]
             CURRENT_STATE["subtitles"] = sorted(existing + shifted, key=lambda x: x.get("start", 0))
             # If a clip in CURRENT_STATE["clips"] covers this range, attach subtitles directly
             for c in CURRENT_STATE.get("clips", []):
-                if abs(c.get("start", 0) - req.start_time) < 1.0:
+                if abs(c.get("start", 0) - req_start) < 1.0:
                     c["subtitles"] = shifted
                     c["subtitles_count"] = len(shifted)
 
@@ -988,14 +988,14 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
             shifted = []
             for s in raw_subs:
                 s_copy = dict(s)
-                s_copy["start"] = round(float(s["start"]) + c.start, 3)
-                s_copy["end"] = round(float(s["end"]) + c.start, 3)
+                s_copy["start"] = round(float(s["start"]) + c_start, 3)
+                s_copy["end"] = round(float(s["end"]) + c_start, 3)
                 if "words" in s and s["words"]:
                     s_copy["words"] = [
                         {
                             **w,
-                            "start": round(float(w.get("start", 0)) + c.start, 3),
-                            "end": round(float(w.get("end", 0)) + c.start, 3)
+                            "start": round(float(w.get("start", 0)) + c_start, 3),
+                            "end": round(float(w.get("end", 0)) + c_start, 3)
                         }
                         for w in s["words"]
                     ]
@@ -1008,7 +1008,7 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
             # Merge into master pool
             accumulated_subs = [
                 s for s in accumulated_subs
-                if s.get("end", 0) <= c.start or s.get("start", 0) >= c.end
+                if s.get("end", 0) <= c_start or s.get("start", 0) >= c_end
             ] + shifted
 
         except Exception as e:

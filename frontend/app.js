@@ -66,7 +66,7 @@ const state = {
     shadow_depth: 6,
     is_uppercase: true,
     words_per_line: 3,
-    model_name: "tiny.en",
+    model_name: "base.en",
     preview_text: "BRO SEE LOOK"
   },
   viralSettings: {
