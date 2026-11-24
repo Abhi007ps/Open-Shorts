@@ -54,6 +54,13 @@ def verify_binaries():
     else:
         print("  [INFO] Facecam Upscaler: FFmpeg Pro Clarity mode (realesrgan-ncnn-vulkan optional)")
 
+    # 4. Phoneme Forced Alignment
+    from backend.forced_aligner import is_forced_aligner_available
+    if is_forced_aligner_available():
+        print("  [OK] Wav2Vec2 Sync:    Active (Phoneme-level forced alignment)")
+    else:
+        print("  [INFO] Wav2Vec2 Sync:    Optional (using calibrated Whisper DTW)")
+
 def verify_models():
     """Ensure at least one Whisper GGML speech model is present; auto-download if empty."""
     from backend.transcriber import ensure_whisper_model

@@ -1114,6 +1114,19 @@ input[type="checkbox"]:checked::after {
   line-height: 1.2;
 }
 
+.style-preview-skyglow {
+  font-family: "Arial Black", Impact, sans-serif;
+  text-transform: uppercase;
+}
+.style-preview-skyglow .preview-word-white {
+  color: #FFFFFF;
+  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+}
+.style-preview-skyglow .preview-word-skyglow {
+  color: #00FF66;
+  text-shadow: 0 0 10px rgba(0, 255, 102, 0.9), 0 0 20px rgba(0, 255, 102, 0.6), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+}
+
 .style-preview-speed {
   font-family: Impact, "Arial Black", sans-serif;
   text-transform: uppercase;

@@ -205,38 +205,63 @@ def generate_preview_frame(
                     mid_idx = w_i
                     break
 
-        formatted_words = []
-        for idx, w in enumerate(words_list):
-            word_styled = w.upper() if subtitle_config.get('is_uppercase', True) else w
-            if idx == mid_idx and style_p in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
-                formatted_words.append(f"{{\\c{hl_color_ass}}}{word_styled}{{\\c{pri_color_ass}}}")
-            else:
-                formatted_words.append(f"{{\\c{pri_color_ass}}}{word_styled}")
-        
-        preview_line_text = " ".join(formatted_words)
-        
-        # Generate ASS with this single dialogue event for preview
-        generate_ass_subtitles(
-            segments=[{
-                "start": 0.0,
-                "end": 999.0,
-                "text": preview_line_text,
-                "words": []
-            }],
-            output_path=preview_ass,
-            font_family=subtitle_config.get("font_family", "Impact"),
-            font_size=subtitle_config.get("font_size", 56),
-            primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
-            highlight_color=subtitle_config.get("highlight_color", "#FFDE00"),
-            outline_color=subtitle_config.get("outline_color", "#000000"),
-            outline_width=subtitle_config.get("outline_width", 4),
-            shadow_depth=subtitle_config.get("shadow_depth", 2),
-            position_x=subtitle_config.get("position_x", 50.0),
-            position_y=subtitle_config.get("position_y", 50.0),
-            style_preset=style_p,
-            is_uppercase=False,
-            sync_offset_ms=subtitle_config.get("sync_offset_ms", 0)
-        )
+        if style_p == "skyglow":
+            word_objs = [{"word": w.upper() if subtitle_config.get('is_uppercase', True) else w, "start": float(idx), "end": float(idx + 1)} for idx, w in enumerate(words_list)]
+            seg_to_render = [{
+                "start": float(mid_idx),
+                "end": float(mid_idx + 1),
+                "text": " ".join([w.upper() if subtitle_config.get('is_uppercase', True) else w for w in words_list]),
+                "words": word_objs
+            }]
+            generate_ass_subtitles(
+                segments=seg_to_render,
+                output_path=preview_ass,
+                font_family=subtitle_config.get("font_family", "Arial Black"),
+                font_size=subtitle_config.get("font_size", 56),
+                primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
+                highlight_color=subtitle_config.get("highlight_color", "#00FF66"),
+                outline_color=subtitle_config.get("outline_color", "#000000"),
+                outline_width=subtitle_config.get("outline_width", 2),
+                shadow_depth=subtitle_config.get("shadow_depth", 2),
+                position_x=subtitle_config.get("position_x", 50.0),
+                position_y=subtitle_config.get("position_y", 50.0),
+                style_preset="skyglow",
+                is_uppercase=False,
+                sync_offset_ms=0,
+                censor_profanity=subtitle_config.get("censor_profanity", True)
+            )
+        else:
+            formatted_words = []
+            for idx, w in enumerate(words_list):
+                word_styled = w.upper() if subtitle_config.get('is_uppercase', True) else w
+                if idx == mid_idx and style_p in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
+                    formatted_words.append(f"{{\\c{hl_color_ass}}}{word_styled}{{\\c{pri_color_ass}}}")
+                else:
+                    formatted_words.append(f"{{\\c{pri_color_ass}}}{word_styled}")
+            
+            preview_line_text = " ".join(formatted_words)
+            generate_ass_subtitles(
+                segments=[{
+                    "start": 0.0,
+                    "end": 999.0,
+                    "text": preview_line_text,
+                    "words": []
+                }],
+                output_path=preview_ass,
+                font_family=subtitle_config.get("font_family", "Impact"),
+                font_size=subtitle_config.get("font_size", 56),
+                primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
+                highlight_color=subtitle_config.get("highlight_color", "#FFDE00"),
+                outline_color=subtitle_config.get("outline_color", "#000000"),
+                outline_width=subtitle_config.get("outline_width", 4),
+                shadow_depth=subtitle_config.get("shadow_depth", 2),
+                position_x=subtitle_config.get("position_x", 50.0),
+                position_y=subtitle_config.get("position_y", 50.0),
+                style_preset=style_p,
+                is_uppercase=False,
+                sync_offset_ms=subtitle_config.get("sync_offset_ms", 0),
+                censor_profanity=subtitle_config.get("censor_profanity", True)
+            )
     
     # 4. Filtergraph
     vmeta = video_meta or probe_video(video_path)
@@ -268,6 +293,9 @@ def generate_preview_frame(
         webcam_y=template_config.get("webcam_y", 540),
         webcam_glow_pad=assets.get("webcam_glow_pad", 0),
         hook_title_y=hook_y,
+        hook_duration=template_config.get("hook_duration", 3.5),
+        climax_zoom_enabled=template_config.get("climax_zoom_enabled", False),
+        climax_rel_time=template_config.get("climax_rel_time"),
         sharpen_amount=template_config.get("sharpen_amount", 0.8),
         contrast_boost=template_config.get("contrast_boost", 1.08),
         saturation_boost=template_config.get("saturation_boost", 1.22),
@@ -599,26 +627,6 @@ def render_clip(
                         })
 
     # Generate ASS file only if subtitles are enabled and there are dialogue subtitles
-    if clip_subtitles and subtitles_enabled:
-        rand_suffix = uuid.uuid4().hex[:6]
-        clip_ass_path = os.path.join(TEMP_DIR, f"{clip_id}_{rand_suffix}_subs.ass")
-        generate_ass_subtitles(
-            segments=clip_subtitles,
-            output_path=clip_ass_path,
-            font_family=subtitle_config.get("font_family", "Impact"),
-            font_size=subtitle_config.get("font_size", 56),
-            primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
-            highlight_color=subtitle_config.get("highlight_color", "#FFDE00"),
-            outline_color=subtitle_config.get("outline_color", "#000000"),
-            outline_width=subtitle_config.get("outline_width", 4),
-            shadow_depth=subtitle_config.get("shadow_depth", 2),
-            position_x=subtitle_config.get("position_x", 50.0),
-            position_y=subtitle_config.get("position_y", 50.0),
-            style_preset=subtitle_config.get("style_preset", "speed"),
-            is_uppercase=subtitle_config.get("is_uppercase", True),
-            sync_offset_ms=subtitle_config.get("sync_offset_ms", 0)
-        )
-
     # 4. Construct filtergraph with Topaz Super-Resolution & Micro-Detail Pipeline
     vmeta = video_meta or probe_video(video_path)
     in_w = int(vmeta.get("width", 1920))
@@ -635,6 +643,144 @@ def render_clip(
         elif end_time > vdur:
             end_time = vdur
     duration = max(0.5, end_time - start_time)
+
+    # Auto-Jump-Cut: detect dead-air gaps > 1.0s, keep 0.15s breath padding, cut dead air with FFmpeg and remap subtitles
+    has_audio = bool(vmeta.get("audio_streams")) if "audio_streams" in vmeta else True
+    if template_config.get("auto_jump_cut", False) and clip_subtitles:
+        speech_intervals = sorted(
+            [(s["start"], s["end"]) for s in clip_subtitles if s["end"] > s["start"]],
+            key=lambda x: x[0]
+        )
+        merged_speech = []
+        for s_st, s_en in speech_intervals:
+            if not merged_speech:
+                merged_speech.append([s_st, s_en])
+            else:
+                if s_st <= merged_speech[-1][1]:
+                    merged_speech[-1][1] = max(merged_speech[-1][1], s_en)
+                else:
+                    merged_speech.append([s_st, s_en])
+
+        cut_windows = []
+        last_speech_end = 0.0
+        for s_st, s_en in merged_speech:
+            if s_st - last_speech_end > 1.0:
+                c_start = last_speech_end + 0.15
+                c_end = s_st - 0.15
+                if c_end > c_start:
+                    cut_windows.append((c_start, c_end))
+            last_speech_end = max(last_speech_end, s_en)
+
+        if duration - last_speech_end > 1.0:
+            c_start = last_speech_end + 0.15
+            c_end = duration - 0.05
+            if c_end > c_start:
+                cut_windows.append((c_start, c_end))
+
+        if cut_windows:
+            retained_intervals = []
+            curr_pos = 0.0
+            for c_start, c_end in cut_windows:
+                if c_start > curr_pos:
+                    retained_intervals.append((curr_pos, c_start))
+                curr_pos = c_end
+            if curr_pos < duration:
+                retained_intervals.append((curr_pos, duration))
+
+            retained_intervals = [(st, en) for st, en in retained_intervals if (en - st) >= 0.1]
+            if len(retained_intervals) > 1:
+                jc_out = os.path.join(TEMP_DIR, f"jumpcut_{clip_id}_{uuid.uuid4().hex[:6]}.mp4")
+                filter_parts = []
+                concat_inputs = []
+                for idx, (st, en) in enumerate(retained_intervals):
+                    abs_st = round(start_time + st, 3)
+                    abs_en = round(start_time + en, 3)
+                    filter_parts.append(f"[0:v]trim=start={abs_st}:end={abs_en},setpts=PTS-STARTPTS[v{idx}]")
+                    if has_audio:
+                        filter_parts.append(f"[0:a]atrim=start={abs_st}:end={abs_en},asetpts=PTS-STARTPTS[a{idx}]")
+                        concat_inputs.append(f"[v{idx}][a{idx}]")
+                    else:
+                        concat_inputs.append(f"[v{idx}]")
+
+                concat_str = "".join(concat_inputs)
+                if has_audio:
+                    filter_parts.append(f"{concat_str}concat=n={len(retained_intervals)}:v=1:a=1[vjc][ajc]")
+                else:
+                    filter_parts.append(f"{concat_str}concat=n={len(retained_intervals)}:v=1:a=0[vjc]")
+
+                jc_filter = ";".join(filter_parts)
+                jc_cmd = [
+                    FFMPEG_BIN, "-y",
+                    "-i", video_path,
+                    "-filter_complex", jc_filter,
+                    "-map", "[vjc]"
+                ]
+                if has_audio:
+                    jc_cmd.extend(["-map", "[ajc]", "-c:a", "aac", "-b:a", "192k"])
+                jc_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", jc_out])
+
+                try:
+                    subprocess.run(jc_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                    if os.path.exists(jc_out) and os.path.getsize(jc_out) > 1000:
+                        def remap_t(t_val: float) -> float:
+                            cut_before = 0.0
+                            for c_st, c_en in cut_windows:
+                                if t_val > c_en:
+                                    cut_before += (c_en - c_st)
+                                elif t_val > c_st:
+                                    cut_before += (t_val - c_st)
+                            return max(0.0, round(t_val - cut_before, 3))
+
+                        remapped_subs = []
+                        for s in clip_subtitles:
+                            new_s = remap_t(s["start"])
+                            new_e = remap_t(s["end"])
+                            if new_e > new_s:
+                                new_words = []
+                                for w in s.get("words", []):
+                                    nw_s = remap_t(w["start"])
+                                    nw_e = remap_t(w["end"])
+                                    if nw_e > nw_s:
+                                        new_words.append({
+                                            "word": w["word"],
+                                            "start": nw_s,
+                                            "end": nw_e
+                                        })
+                                remapped_subs.append({
+                                    "start": new_s,
+                                    "end": new_e,
+                                    "text": s["text"],
+                                    "words": new_words
+                                })
+                        clip_subtitles = remapped_subs
+                        new_duration = sum(en - st for st, en in retained_intervals)
+                        video_path = jc_out
+                        start_time = 0.0
+                        duration = max(0.5, round(new_duration, 3))
+                except Exception as e:
+                    print(f"[WARN] Auto-jump-cut pre-processing failed, falling back to original clip: {e}")
+
+    # Generate ASS file only if subtitles are enabled and there are dialogue subtitles
+    if clip_subtitles and subtitles_enabled:
+        rand_suffix = uuid.uuid4().hex[:6]
+        clip_ass_path = os.path.join(TEMP_DIR, f"{clip_id}_{rand_suffix}_subs.ass")
+        generate_ass_subtitles(
+            segments=clip_subtitles,
+            output_path=clip_ass_path,
+            font_family=subtitle_config.get("font_family", "Arial Black"),
+            font_size=subtitle_config.get("font_size", 56),
+            primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
+            highlight_color=subtitle_config.get("highlight_color", "#00FF66"),
+            outline_color=subtitle_config.get("outline_color", "#000000"),
+            outline_width=subtitle_config.get("outline_width", 2),
+            shadow_depth=subtitle_config.get("shadow_depth", 2),
+            position_x=subtitle_config.get("position_x", 50.0),
+            position_y=subtitle_config.get("position_y", 50.0),
+            style_preset=subtitle_config.get("style_preset", "skyglow"),
+            is_uppercase=subtitle_config.get("is_uppercase", True),
+            sync_offset_ms=subtitle_config.get("sync_offset_ms", 0),
+            censor_profanity=subtitle_config.get("censor_profanity", True)
+        )
 
     # Optional plug-and-play Real-ESRGAN neural facecam upscale pass
     cam_esrgan_path = None
@@ -655,6 +801,11 @@ def render_clip(
     from backend.hardware import get_performance_profile
     perf_prof = get_performance_profile()
     active_encoder = encoder if (encoder and encoder != "auto") else get_best_encoder()
+
+    climax_zoom = template_config.get("climax_zoom_enabled", False)
+    climax_rel = template_config.get("climax_rel_time")
+    if climax_zoom and climax_rel is None:
+        climax_rel = max(0.8, round(duration * 0.65, 2))
 
     filtergraph = build_composite_filtergraph(
         canvas_w=canvas_w,
@@ -678,6 +829,9 @@ def render_clip(
         webcam_y=int(round(template_config.get("webcam_y", 540) * scale_factor)),
         webcam_glow_pad=assets.get("webcam_glow_pad", 0),
         hook_title_y=hook_y,
+        hook_duration=template_config.get("hook_duration", 3.5),
+        climax_zoom_enabled=climax_zoom,
+        climax_rel_time=climax_rel,
         sharpen_amount=template_config.get("sharpen_amount", 0.8),
         contrast_boost=template_config.get("contrast_boost", 1.08),
         saturation_boost=template_config.get("saturation_boost", 1.22),
@@ -743,10 +897,12 @@ def render_clip(
     use_audio_mastering = has_audio and template_config.get("audio_mastering", True)
 
     audio_render_args = []
-    if use_audio_mastering:
-        audio_render_args.extend([
-            "-af", "highpass=f=70,acompressor=threshold=-18dB:ratio=3.5:attack=5:release=120:makeup=2,loudnorm=I=-14:TP=-1.5:LRA=11"
-        ])
+    if has_audio:
+        if use_audio_mastering:
+            af_str = "asetpts=PTS-STARTPTS,highpass=f=70,acompressor=threshold=-18dB:ratio=3.5:attack=5:release=120:makeup=2,loudnorm=I=-14:TP=-1.5:LRA=11"
+        else:
+            af_str = "asetpts=PTS-STARTPTS"
+        audio_render_args.extend(["-af", af_str])
     audio_render_args.extend([
         "-c:a", "aac",
         "-b:a", "192k",

@@ -453,6 +453,9 @@ def build_composite_filtergraph(
     webcam_y: int = 540,
     webcam_glow_pad: int = 0,
     hook_title_y: Optional[int] = None,
+    hook_duration: float = 3.5,
+    climax_zoom_enabled: bool = False,
+    climax_rel_time: Optional[float] = None,
     sharpen_amount: float = 0.8,
     contrast_boost: float = 1.08,
     saturation_boost: float = 1.22,
@@ -538,6 +541,17 @@ def build_composite_filtergraph(
         gameplay_crop_filter = f"crop={zw}:{zh}:{zx}:{zy},"
     else:
         gameplay_crop_filter = ""
+
+    # Climax Zoom Punch: smooth 1.0x -> 1.07x -> 1.0x pulse over 1.6s centered at climax_rel_time
+    climax_crop_pulse = ""
+    if climax_zoom_enabled and climax_rel_time is not None and climax_rel_time >= 0:
+        t0 = max(0.0, float(climax_rel_time) - 0.8)
+        t1 = t0 + 1.6
+        climax_crop_pulse = (
+            f"crop='iw/(if(between(t,{t0:.2f},{t1:.2f}),1+0.07*sin(PI*(t-{t0:.2f})/1.6),1))':"
+            f"'ih/(if(between(t,{t0:.2f},{t1:.2f}),1+0.07*sin(PI*(t-{t0:.2f})/1.6),1))':"
+            f"(iw-ow)/2:(ih-oh)/2,"
+        )
 
     if not webcam_crop:
         webcam_crop = {"x": 22, "y": 160, "w": 480, "h": 270}
@@ -703,7 +717,7 @@ def build_composite_filtergraph(
             down_h = max(270, (canvas_h // 4 // 2) * 2)
             down_blur = max(1, safe_blur // 4)
             bg_filter = (
-                f"[0:v]scale={down_w}:{down_h}:force_original_aspect_ratio=increase,"
+                f"[0:v]setpts=PTS-STARTPTS,scale={down_w}:{down_h}:force_original_aspect_ratio=increase,"
                 f"crop={down_w}:{down_h},"
                 f"boxblur={down_blur}:1,"
                 f"scale={canvas_w}:{canvas_h}:flags=bilinear,"
@@ -711,7 +725,7 @@ def build_composite_filtergraph(
             )
         else:
             bg_filter = (
-                f"[0:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
+                f"[0:v]setpts=PTS-STARTPTS,scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
                 f"crop={canvas_w}:{canvas_h},"
                 f"boxblur={safe_blur}:2,"
                 f"eq=brightness={bg_brightness}[bg]"
@@ -719,15 +733,17 @@ def build_composite_filtergraph(
     else:
         bg_filter = f"color=c=black:s={canvas_w}x{canvas_h}:r={input_fps}[bg]"
 
+    hook_enable = f":enable='between(t,0,{hook_duration:.2f})'" if (hook_duration and hook_duration > 0) else ""
+
     if is_split_screen:
         if external_cam_input_idx is not None:
             cam_chain = f"[{external_cam_input_idx}:v]scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
         else:
-            cam_chain = f"[0:v]{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
+            cam_chain = f"[0:v]setpts=PTS-STARTPTS,{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{enhance_cam}format=rgba[cam_raw]"
 
         filter_chains = [
             bg_filter,
-            f"[0:v]{gameplay_crop_filter}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{enhance_gp}format=rgba[gp_raw]",
+            f"[0:v]setpts=PTS-STARTPTS,{gameplay_crop_filter}{climax_crop_pulse}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{enhance_gp}format=rgba[gp_raw]",
             cam_chain,
             f"[bg][cam_raw]overlay={webcam_x}:{webcam_y}:shortest=1:eof_action=repeat[bg_cam]",
             f"[bg_cam][gp_raw]overlay={gameplay_x}:{gameplay_y}:eof_action=repeat[bg_all]",
@@ -744,21 +760,21 @@ def build_composite_filtergraph(
             base_overlay_layer = "[bg_all]"
 
         if hook_title_y is not None:
-            filter_chains.append(f"{base_overlay_layer}[5:v]overlay=0:{hook_title_y}:eof_action=repeat[pre_sub]")
+            filter_chains.append(f"{base_overlay_layer}[5:v]overlay=0:{hook_title_y}:eof_action=repeat{hook_enable}[pre_sub]")
         else:
             filter_chains.append(f"{base_overlay_layer}null[pre_sub]")
     else:
         if external_cam_input_idx is not None:
             cam_chain = f"[{external_cam_input_idx}:v]scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
         else:
-            cam_chain = f"[0:v]{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
+            cam_chain = f"[0:v]setpts=PTS-STARTPTS,{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=decrease:flags=spline+accurate_rnd+full_chroma_int,setsar=1,pad={webcam_w}:{webcam_h}:(ow-iw)/2:(oh-ih)/2:color=black,{enhance_cam}format=rgba[cam_raw]"
 
         filter_chains = [
             # 1. Background layer: Fill 9:16 vertical canvas
             bg_filter,
             
             # 2. Gameplay card: crop -> native pre-deblock -> scale with lanczos -> Topaz enhancement -> mask -> card -> border
-            f"[0:v]{gameplay_crop_filter}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{enhance_gp}format=rgba[gp_raw]",
+            f"[0:v]setpts=PTS-STARTPTS,{gameplay_crop_filter}{climax_crop_pulse}{deblock_str}scale={gameplay_w}:{gameplay_h}:flags=lanczos+accurate_rnd,{enhance_gp}format=rgba[gp_raw]",
             f"[1:v]scale={gameplay_w}:{gameplay_h}[gp_mask]",
             f"[gp_raw][gp_mask]alphamerge[gp_masked]",
             f"[bg][gp_masked]overlay={gameplay_x}:{gameplay_y}:shortest=1:eof_action=repeat[bg_gp]",
@@ -774,7 +790,7 @@ def build_composite_filtergraph(
 
         if hook_title_y is not None:
             filter_chains.append(f"[bg_all][4:v]overlay={webcam_x - webcam_glow_pad}:{webcam_y - webcam_glow_pad}:eof_action=repeat[bg_halo]")
-            filter_chains.append(f"[bg_halo][5:v]overlay=0:{hook_title_y}:eof_action=repeat[pre_sub]")
+            filter_chains.append(f"[bg_halo][5:v]overlay=0:{hook_title_y}:eof_action=repeat{hook_enable}[pre_sub]")
         else:
             filter_chains.append(f"[bg_all][4:v]overlay={webcam_x - webcam_glow_pad}:{webcam_y - webcam_glow_pad}:eof_action=repeat[pre_sub]")
 

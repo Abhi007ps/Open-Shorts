@@ -47,26 +47,29 @@ const state = {
     deblock_level: "medium",
     pixel_generator: true,
     pixel_generator_mode: "ultra",
-    export_bitrate: "14M"
+    export_bitrate: "14M",
+    climax_zoom_enabled: false,
+    auto_jump_cut: false
   },
   masterTemplate: null,
   autoApplyMaster: true,
   hookConfig: null,
   subtitlesConfig: {
     enabled: true,
-    font_family: "Impact",
-    font_size: 62,
+    font_family: "Arial Black",
+    font_size: 56,
     position_x: 50,
     position_y: 50,
-    style_preset: "speed",
+    style_preset: "skyglow",
     primary_color: "#FFFFFF",
-    highlight_color: "#CCFF00",
+    highlight_color: "#00FF66",
     outline_color: "#000000",
-    outline_width: 8,
-    shadow_depth: 6,
+    outline_width: 2,
+    shadow_depth: 2,
     is_uppercase: true,
     words_per_line: 3,
     model_name: "base.en",
+    censor_profanity: true,
     preview_text: "BRO SEE LOOK"
   },
   viralSettings: {
@@ -699,7 +702,23 @@ function initPresets() {
       const style = btn.getAttribute("data-style");
       state.subtitlesConfig.style_preset = style;
       
-      if (style === "speed") {
+      if (style === "skyglow") {
+        setSubColors("#FFFFFF", "#00FF66", "#000000", 2, "Arial Black");
+        state.subtitlesConfig.position_y = 50;
+        state.subtitlesConfig.position_x = 50;
+        state.subtitlesConfig.font_size = 56;
+        state.subtitlesConfig.words_per_line = 3;
+        state.subtitlesConfig.is_uppercase = true;
+        const sliderY = document.getElementById("slider-sub-y");
+        const valY = document.getElementById("val-sub-y");
+        if (sliderY) sliderY.value = 50;
+        if (valY) valY.innerText = "50%";
+        const sliderSize = document.getElementById("slider-font-size");
+        const valSize = document.getElementById("val-font-size");
+        if (sliderSize) sliderSize.value = 56;
+        if (valSize) valSize.innerText = "56px";
+        if (typeof updateSubHandleUI === "function") updateSubHandleUI();
+      } else if (style === "speed") {
         setSubColors("#FFFFFF", "#CCFF00", "#000000", 8, "Impact");
         state.subtitlesConfig.position_y = 50;
         state.subtitlesConfig.position_x = 50;
@@ -792,6 +811,35 @@ function initPresets() {
     checkUpper.addEventListener("change", (e) => {
       state.subtitlesConfig.is_uppercase = e.target.checked;
       requestPreviewUpdate();
+    });
+  }
+
+  // Profanity Censor toggle
+  const checkCensor = document.getElementById("check-censor-profanity");
+  if (checkCensor) {
+    checkCensor.checked = state.subtitlesConfig.censor_profanity !== false;
+    checkCensor.addEventListener("change", (e) => {
+      state.subtitlesConfig.censor_profanity = e.target.checked;
+      requestPreviewUpdate();
+    });
+  }
+
+  // Climax Zoom Punch toggle
+  const checkClimaxZoom = document.getElementById("check-climax-zoom");
+  if (checkClimaxZoom) {
+    checkClimaxZoom.checked = !!state.template.climax_zoom_enabled;
+    checkClimaxZoom.addEventListener("change", (e) => {
+      state.template.climax_zoom_enabled = e.target.checked;
+      requestPreviewUpdate();
+    });
+  }
+
+  // Auto-Jump-Cut toggle
+  const checkAutoJumpCut = document.getElementById("check-auto-jump-cut");
+  if (checkAutoJumpCut) {
+    checkAutoJumpCut.checked = !!state.template.auto_jump_cut;
+    checkAutoJumpCut.addEventListener("change", (e) => {
+      state.template.auto_jump_cut = e.target.checked;
     });
   }
 
@@ -1929,6 +1977,18 @@ function syncUIFromState() {
   const checkUpper = document.getElementById("check-uppercase");
   if (checkUpper && state.subtitlesConfig.is_uppercase !== undefined) {
     checkUpper.checked = state.subtitlesConfig.is_uppercase;
+  }
+  const checkCensor = document.getElementById("check-censor-profanity");
+  if (checkCensor && state.subtitlesConfig.censor_profanity !== undefined) {
+    checkCensor.checked = state.subtitlesConfig.censor_profanity;
+  }
+  const checkClimax = document.getElementById("check-climax-zoom");
+  if (checkClimax && state.template.climax_zoom_enabled !== undefined) {
+    checkClimax.checked = state.template.climax_zoom_enabled;
+  }
+  const checkJumpCut = document.getElementById("check-auto-jump-cut");
+  if (checkJumpCut && state.template.auto_jump_cut !== undefined) {
+    checkJumpCut.checked = state.template.auto_jump_cut;
   }
 
   const setColor = (pickerId, hexId, hex) => {
@@ -5499,6 +5559,16 @@ function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
         ctx.translate(wordCenterX, wordCenterY);
         ctx.scale(scale, scale);
         ctx.translate(-wordCenterX, -wordCenterY);
+      }
+
+      if (state.subtitlesConfig.style_preset === "skyglow" && isWordActive) {
+        ctx.save();
+        ctx.shadowColor = hlColor;
+        ctx.shadowBlur = 14;
+        ctx.strokeStyle = hlColor;
+        ctx.lineWidth = strokeW + 4;
+        ctx.strokeText(wItem.text, wordCenterX, wordCenterY);
+        ctx.restore();
       }
 
       ctx.shadowColor = "rgba(0, 0, 0, 0.85)";

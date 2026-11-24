@@ -1,3 +1,4 @@
+import os
 import re
 from typing import List, Dict, Any, Optional
 
@@ -39,30 +40,132 @@ def format_srt_timestamp(seconds: float) -> str:
         ms = 999
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{ms:03d}"
 
+def _repl_fuck(m):
+    w = m.group(0)
+    rest = m.group(1)
+    if w.isupper():
+        return "F*CK" + rest.upper()
+    if w[0].isupper():
+        return "F*ck" + rest.lower()
+    return "f*ck" + rest.lower()
+
+def _repl_shit(m):
+    w = m.group(0)
+    rest = m.group(1)
+    if w.isupper():
+        return "SH*T" + rest.upper()
+    if w[0].isupper():
+        return "Sh*t" + rest.lower()
+    return "sh*t" + rest.lower()
+
+def _repl_bitch(m):
+    w = m.group(0)
+    rest = m.group(1)
+    if w.isupper():
+        return "B*TCH" + rest.upper()
+    if w[0].isupper():
+        return "B*tch" + rest.lower()
+    return "b*tch" + rest.lower()
+
+def _repl_asshole(m):
+    w = m.group(0)
+    rest = m.group(1)
+    if w.isupper():
+        return "AS*HOLE" + rest.upper()
+    if w[0].isupper():
+        return "As*hole" + rest.lower()
+    return "as*hole" + rest.lower()
+
+def _repl_ass(m):
+    w = m.group(0)
+    if w.isupper():
+        return "AS*"
+    if w[0].isupper():
+        return "As*"
+    return "as*"
+
+def _repl_dick(m):
+    w = m.group(0)
+    rest = m.group(1)
+    if w.isupper():
+        return "D*CK" + rest.upper()
+    if w[0].isupper():
+        return "D*ck" + rest.lower()
+    return "d*ck" + rest.lower()
+
+def _repl_pussy(m):
+    w = m.group(0)
+    suf = m.group(1)
+    if suf.lower() == 'ies':
+        return "P*SSIES" if w.isupper() else "p*ssies"
+    return "P*SSY" if w.isupper() else ("P*ssy" if w[0].isupper() else "p*ssy")
+
+def mask_profanity(text: str) -> str:
+    """
+    Masks explicit profanity with asterisks while preserving word boundaries and casing.
+    fuck* -> F*CK*, shit* -> SH*T*, bitch* -> B*TCH*, asshole* -> AS*HOLE*, ass -> AS*,
+    dick* -> D*CK*, pussy/pussies -> P*SSY/P*SSIES.
+    """
+    if not text:
+        return text
+    s = re.sub(r'\b[fF][uU][cC][kK](\w*)\b', _repl_fuck, text)
+    s = re.sub(r'\b[sS][hH][iI][tT](\w*)\b', _repl_shit, s)
+    s = re.sub(r'\b[bB][iI][tT][cC][hH](\w*)\b', _repl_bitch, s)
+    s = re.sub(r'\b[aA][sS][sS][hH][oO][lL][eE](\w*)\b', _repl_asshole, s)
+    s = re.sub(r'\b[aA][sS][sS]\b', _repl_ass, s)
+    s = re.sub(r'\b[dD][iI][cC][kK](\w*)\b', _repl_dick, s)
+    s = re.sub(r'\b[pP][uU][sS][sS](y|ies)\b', _repl_pussy, s, flags=re.IGNORECASE)
+    return s
+
+def _is_font_installed(font_name: str) -> bool:
+    if os.name == "nt":
+        fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        if os.path.isdir(fonts_dir):
+            clean = font_name.lower().replace(" ", "").replace("-", "")
+            try:
+                for f in os.listdir(fonts_dir):
+                    if clean in f.lower().replace(" ", "").replace("-", ""):
+                        return True
+            except Exception:
+                pass
+    return False
+
+def resolve_font_family(font_family: str, style_preset: str = "") -> str:
+    """Resolves font family with fallbacks for cross-platform portability."""
+    if style_preset == "skyglow":
+        for test_name in ["Montserrat ExtraBold", "Montserrat", font_family]:
+            if test_name and _is_font_installed(test_name):
+                return test_name
+        return "Arial Black"
+    return font_family or "Arial Black"
+
 def generate_ass_subtitles(
     segments: List[Dict[str, Any]],
     output_path: str,
-    font_family: str = "Impact",
+    font_family: str = "Arial Black",
     font_size: int = 56,
     primary_color: str = "#FFFFFF",
-    highlight_color: str = "#FFDE00",
+    highlight_color: str = "#00FF66",
     outline_color: str = "#000000",
-    outline_width: int = 4,
+    outline_width: int = 2,
     shadow_depth: int = 2,
     position_x: float = 50.0, # percentage from left (0 = left, 50 = center, 100 = right)
-    position_y: float = 82.0, # percentage from top (0 = top, 50 = middle, 100 = bottom)
-    style_preset: str = "speed", # speed, hormozi, mrbeast, neon, box, fire, clean
+    position_y: float = 50.0, # percentage from top (0 = top, 50 = middle, 100 = bottom)
+    style_preset: str = "skyglow", # skyglow, speed, box, clean, hormozi, mrbeast, neon, fire
     is_uppercase: bool = True,
     play_res_x: int = 1080,
     play_res_y: int = 1920,
     hook_config: Optional[Dict[str, Any]] = None,
-    sync_offset_ms: int = 0
+    sync_offset_ms: int = 0,
+    censor_profanity: bool = True
 ) -> str:
     r"""
     Generates a complete ASS subtitle file with free 2D positioning (\pos), word highlights,
-    and optional top viral hook headline banner.
-    Supports 1-word-at-a-time, multi-word chunking, and multiple aesthetic style templates.
+    optional auto-profanity masking, and progressive word reveals.
+    Features the reference SkyGlow preset: dual-layer rendering (Layer 0 neon halo outline,
+    Layer 1 crisp foreground text), progressive word reveals, and punchy pop transitions.
     """
+    effective_font = resolve_font_family(font_family, style_preset)
     sync_offset = float(sync_offset_ms or 0) / 1000.0
     # Calculate exact pixel position on canvas
     pos_x = int(play_res_x * (float(position_x) / 100.0))
@@ -91,7 +194,7 @@ PlayResY: {play_res_y}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_family},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,1,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1
+Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,1,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"""
@@ -102,6 +205,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
         s_t = max(0.0, float(seg.get("start", 0)) + sync_offset)
         e_t = max(s_t + 0.05, float(seg.get("end", 0)) + sync_offset)
         raw_text = re.sub(r'[,.]+', '', str(seg.get("text", ""))).strip()
+        if censor_profanity and raw_text:
+            raw_text = mask_profanity(raw_text)
         if raw_text and e_t > s_t:
             valid_segs.append({
                 "start": s_t,
@@ -122,12 +227,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
         words = seg.get("words", [])
         start_str = format_ass_timestamp(start_t)
         end_str = format_ass_timestamp(end_t)
-        neon_glow = r"{\blur4}" if style_preset == "neon" else ""
 
         cleaned_words = []
         if words:
             for w in words:
                 w_txt = re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()
+                if censor_profanity and w_txt:
+                    w_txt = mask_profanity(w_txt)
                 if w_txt:
                     w_s = float(w.get("start", start_t)) + sync_offset
                     w_e = float(w.get("end", end_t)) + sync_offset
@@ -136,47 +242,119 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
                         "start": max(start_t, min(end_t, w_s)),
                         "end": max(start_t, min(end_t, w_e))
                     })
-        
-        # 1. Multi-word segment with active karaoke word highlighting
-        if len(cleaned_words) > 1 and style_preset in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
+
+        # ==========================================
+        # PRESET A: SkyGlow Dual-Layer Progressive
+        # ==========================================
+        if style_preset == "skyglow":
             num_w = len(cleaned_words)
-            # Build strictly monotonic, gapless onset timestamps across the entire phrase
-            w_starts = [start_t]
-            for i in range(1, num_w):
-                s_i = max(cleaned_words[i]["start"], w_starts[i - 1] + 0.04)
-                s_i = min(s_i, end_t - 0.04 * (num_w - i))
-                w_starts.append(s_i)
+            if num_w > 1:
+                # Monotonic, gapless word starts
+                w_starts = [start_t]
+                for i in range(1, num_w):
+                    s_i = max(cleaned_words[i]["start"], w_starts[i - 1] + 0.04)
+                    s_i = min(s_i, end_t - 0.04 * (num_w - i))
+                    w_starts.append(s_i)
 
-            for i in range(num_w):
-                disp_start = w_starts[i]
-                disp_end = w_starts[i + 1] if (i + 1 < num_w) else end_t
-                disp_end = max(disp_start + 0.04, disp_end)
-                w_start_str = format_ass_timestamp(disp_start)
-                w_end_str = format_ass_timestamp(disp_end)
+                is_short_or_punchy = (num_w <= 2) or ('!' in text)
 
-                # Keep multi-word line horizontally rock-solid: highlight purely via color.
-                # Only on word 0 of non-speed presets apply a subtle smooth whole-line entrance pop.
-                entrance_tag = r"{\fscx106\fscy106\t(0,80,\fscx100\fscy100)}" if (i == 0 and style_preset != "speed") else ""
+                for i in range(num_w):
+                    disp_start = w_starts[i]
+                    disp_end = w_starts[i + 1] if (i + 1 < num_w) else end_t
+                    disp_end = max(disp_start + 0.04, disp_end)
+                    w_start_str = format_ass_timestamp(disp_start)
+                    w_end_str = format_ass_timestamp(disp_end)
 
-                formatted_words = []
-                for j, word_item in enumerate(cleaned_words):
-                    if j == i:
-                        formatted_words.append(f"{{\\c{ass_highlight}}}{word_item['word']}{{\\c{ass_primary}}}")
+                    revealed = cleaned_words[:i + 1]
+                    plain_reveal = " ".join([item["word"] for item in revealed])
+
+                    if is_short_or_punchy:
+                        # 100% neon highlight for punchy phrases
+                        halo_content = plain_reveal
+                        if len(revealed) == 1:
+                            fg_content = f"{{\\c{ass_highlight}\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)}}{revealed[0]['word']}"
+                        else:
+                            setup_str = " ".join([item["word"] for item in revealed[:-1]])
+                            fg_content = f"{{\\c{ass_highlight}}}{setup_str} {{\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)}}{revealed[-1]['word']}"
                     else:
-                        formatted_words.append(word_item['word'])
-                
-                line_text = " ".join(formatted_words)
-                lines.append(f"Dialogue: 0,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{entrance_tag}{{\\c{ass_primary}}}{line_text}")
+                        # 3+ words: setup words in white, active word in neon pop
+                        halo_content = plain_reveal
+                        if len(revealed) == 1:
+                            fg_content = f"{{\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)\\c{ass_highlight}}}{revealed[0]['word']}"
+                        else:
+                            setup_str = " ".join([item["word"] for item in revealed[:-1]])
+                            fg_content = f"{{\\c{ass_primary}}}{setup_str} {{\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)\\c{ass_highlight}}}{revealed[-1]['word']}"
 
-        # 2. Single word at a time mode (single smooth Dialogue event with ASS \\t interpolation)
-        elif len(cleaned_words) == 1:
-            raw_w = cleaned_words[0]["word"]
-            pop_tag = "" if style_preset == "speed" else r"{\fscx114\fscy114\t(0,90,\fscx100\fscy100)}"
-            lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{pop_tag}{{\\c{ass_highlight}}}{raw_w}")
+                    # Layer 0: Neon halo bloom
+                    lines.append(
+                        f"Dialogue: 0,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{{\\bord9\\blur12\\shad0\\1a&HFF&\\3a&H45&\\3c{ass_highlight}}}{halo_content}"
+                    )
+                    # Layer 1: Foreground sharp text
+                    lines.append(
+                        f"Dialogue: 1,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{{\\bord2\\shad2\\blur0.4}}{fg_content}"
+                    )
 
-        # 3. Simple text line with custom primary color and optional glow
+            elif num_w == 1:
+                raw_w = cleaned_words[0]["word"]
+                halo_content = raw_w
+                fg_content = f"{{\\c{ass_highlight}\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)}}{raw_w}"
+                lines.append(
+                    f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord9\\blur12\\shad0\\1a&HFF&\\3a&H45&\\3c{ass_highlight}}}{halo_content}"
+                )
+                lines.append(
+                    f"Dialogue: 1,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord2\\shad2\\blur0.4}}{fg_content}"
+                )
+            else:
+                lines.append(
+                    f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord9\\blur12\\shad0\\1a&HFF&\\3a&H45&\\3c{ass_highlight}}}{text}"
+                )
+                lines.append(
+                    f"Dialogue: 1,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord2\\shad2\\blur0.4}}{{\\c{ass_primary}}}{text}"
+                )
+
+        # ==========================================
+        # PRESET B: Speed / Clean / Box / Other Styles
+        # ==========================================
         else:
-            lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{{\\c{ass_primary}}}{text}")
+            neon_glow = r"{\blur4}" if style_preset == "neon" else ""
+            # 1. Multi-word segment with active karaoke word highlighting
+            if len(cleaned_words) > 1 and style_preset in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
+                num_w = len(cleaned_words)
+                w_starts = [start_t]
+                for i in range(1, num_w):
+                    s_i = max(cleaned_words[i]["start"], w_starts[i - 1] + 0.04)
+                    s_i = min(s_i, end_t - 0.04 * (num_w - i))
+                    w_starts.append(s_i)
+
+                for i in range(num_w):
+                    disp_start = w_starts[i]
+                    disp_end = w_starts[i + 1] if (i + 1 < num_w) else end_t
+                    disp_end = max(disp_start + 0.04, disp_end)
+                    w_start_str = format_ass_timestamp(disp_start)
+                    w_end_str = format_ass_timestamp(disp_end)
+
+                    entrance_tag = r"{\fscx106\fscy106\t(0,80,\fscx100\fscy100)}" if (i == 0 and style_preset != "speed") else ""
+
+                    formatted_words = []
+                    for j, word_item in enumerate(cleaned_words):
+                        if j == i:
+                            formatted_words.append(f"{{\\c{ass_highlight}}}{word_item['word']}{{\\c{ass_primary}}}")
+                        else:
+                            formatted_words.append(word_item['word'])
+                    
+                    line_text = " ".join(formatted_words)
+                    lines.append(f"Dialogue: 0,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{entrance_tag}{{\\c{ass_primary}}}{line_text}")
+
+            # 2. Single word at a time mode
+            elif len(cleaned_words) == 1:
+                raw_w = cleaned_words[0]["word"]
+                pop_tag = "" if style_preset in ("speed", "clean") else r"{\fscx114\fscy114\t(0,90,\fscx100\fscy100)}"
+                highlight = ass_primary if style_preset == "clean" else ass_highlight
+                lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{pop_tag}{{\\c{highlight}}}{raw_w}")
+
+            # 3. Simple text line
+            else:
+                lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{neon_glow}{{\\c{ass_primary}}}{text}")
             
     content = "\n".join(lines)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -184,14 +362,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     
     return output_path
 
-def generate_srt_subtitles(segments: List[Dict[str, Any]], output_path: str, is_uppercase: bool = False) -> str:
-    """Generates standard SRT subtitles file without full stops or commas."""
+def generate_srt_subtitles(segments: List[Dict[str, Any]], output_path: str, is_uppercase: bool = False, censor_profanity: bool = True) -> str:
+    """Generates standard SRT subtitles file without full stops or commas, with optional profanity masking."""
     lines = []
     idx = 1
     for seg in segments:
         start_t = float(seg.get("start", 0))
         end_t = float(seg.get("end", 0))
         text = re.sub(r'[,.]+', '', seg.get("text", "")).strip()
+        if censor_profanity and text:
+            text = mask_profanity(text)
         if not text or end_t <= start_t:
             continue
         if is_uppercase:

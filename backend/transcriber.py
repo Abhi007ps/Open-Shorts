@@ -16,32 +16,43 @@ DEFAULT_MODEL_MULTI = os.path.join(MODELS_DIR, "ggml-tiny.bin")
 def ensure_whisper_model(preferred_name: str = "base.en") -> str:
     """
     Ensures that a valid GGML model file exists in the models/ directory.
-    If none exists, automatically downloads the lightweight high-accuracy model from HuggingFace.
+    If the requested model is not found, downloads it cleanly from HuggingFace.
     """
     os.makedirs(MODELS_DIR, exist_ok=True)
     preferred_path = os.path.join(MODELS_DIR, f"ggml-{preferred_name}.bin")
     if os.path.isfile(preferred_path) and os.path.getsize(preferred_path) > 1000000:
         return preferred_path
 
+    # Try downloading the preferred model first
+    file_name = f"ggml-{preferred_name}.bin"
+    dl_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{file_name}"
+    dl_path = os.path.join(MODELS_DIR, file_name)
+    try:
+        print(f"[*] Downloading missing Whisper model ({file_name}) from HuggingFace...")
+        import urllib.request
+        urllib.request.urlretrieve(dl_url, dl_path)
+        if os.path.isfile(dl_path) and os.path.getsize(dl_path) > 1000000:
+            print(f"[OK] Downloaded {file_name} successfully ({os.path.getsize(dl_path)/(1024*1024):.1f} MB).")
+            return dl_path
+    except Exception as e:
+        print(f"[WARN] Failed to download {file_name}: {e}")
+
     # Check fallbacks already on disk
     for candidate in [DEFAULT_MODEL_BASE_EN, DEFAULT_MODEL_BASE, DEFAULT_MODEL_EN, DEFAULT_MODEL_MULTI]:
         if os.path.isfile(candidate) and os.path.getsize(candidate) > 1000000:
             return candidate
 
-    # Auto-download preferred model (or tiny.en fallback)
-    for model_to_dl in [preferred_name, "tiny.en"]:
-        file_name = f"ggml-{model_to_dl}.bin"
-        dl_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{file_name}"
-        dl_path = os.path.join(MODELS_DIR, file_name)
-        try:
-            print(f"[*] Downloading missing Whisper model ({file_name}) from HuggingFace...")
-            import urllib.request
-            urllib.request.urlretrieve(dl_url, dl_path)
-            if os.path.isfile(dl_path) and os.path.getsize(dl_path) > 1000000:
-                print(f"[OK] Downloaded {file_name} successfully ({os.path.getsize(dl_path)/(1024*1024):.1f} MB).")
-                return dl_path
-        except Exception as e:
-            print(f"[WARN] Failed to download {file_name}: {e}")
+    # Fallback auto-download of tiny.en if nothing else exists
+    tiny_name = "ggml-tiny.en.bin"
+    tiny_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{tiny_name}"
+    tiny_path = os.path.join(MODELS_DIR, tiny_name)
+    try:
+        import urllib.request
+        urllib.request.urlretrieve(tiny_url, tiny_path)
+        if os.path.isfile(tiny_path) and os.path.getsize(tiny_path) > 1000000:
+            return tiny_path
+    except Exception as e:
+        print(f"[WARN] Failed to download fallback {tiny_name}: {e}")
 
     raise RuntimeError("Whisper speech model missing and automatic download failed. Please check internet connection.")
 
@@ -237,7 +248,20 @@ def get_dtw_preset(model_path: str) -> Optional[str]:
     base = os.path.basename(model_path).lower()
     base = re.sub(r'^ggml-', '', base)
     base = re.sub(r'\.bin$', '', base)
-    presets = ["tiny.en", "tiny", "base.en", "base", "small.en", "small", "medium.en", "medium", "large-v1", "large-v2", "large-v3", "large"]
+    
+    # Accurate mapping for whisper.cpp DTW presets
+    if "large-v3-turbo" in base or "large.v3.turbo" in base:
+        return "large.v3.turbo"
+    if "large-v3" in base or "large.v3" in base:
+        return "large.v3"
+    if "large-v2" in base or "large.v2" in base:
+        return "large.v2"
+    if "large-v1" in base or "large.v1" in base:
+        return "large.v1"
+    if "large" in base:
+        return "large"
+
+    presets = ["small.en", "small", "base.en", "base", "tiny.en", "tiny", "medium.en", "medium"]
     for p in presets:
         if base == p or base.startswith(p):
             return p
@@ -321,7 +345,8 @@ def parse_tokens_to_words(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, 
 
             t_dtw_val = tok.get("t_dtw", -1)
             if t_dtw_val is not None and float(t_dtw_val) >= 0:
-                dtw_s = float(t_dtw_val) / 100.0
+                # Slight -45ms consonant onset compensation (clamped >= 0.0) for razor-sharp syllable attacks
+                dtw_s = max(0.0, (float(t_dtw_val) / 100.0) - 0.045)
                 if abs(dtw_s - offset_s) <= 1.2:
                     s_sec = dtw_s
                 else:
@@ -659,6 +684,15 @@ def transcribe_video(
 
         if progress_callback:
             progress_callback("Sanitizing word timings & zero-blink alignment...", 85)
+
+        # Optional phoneme-level forced alignment pass via Wav2Vec2
+        if raw_words:
+            try:
+                from backend.forced_aligner import is_forced_aligner_available, align_words_wav2vec2
+                if is_forced_aligner_available() and wav_path and os.path.exists(wav_path):
+                    raw_words = align_words_wav2vec2(wav_path, raw_words, language=language)
+            except Exception as fa_err:
+                print(f"[WARN] Forced aligner error, keeping DTW words: {fa_err}")
 
         # 3. Sanitize word timings (non-destructive, zero-blink, no quiet speech dropping)
         if raw_words:

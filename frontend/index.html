@@ -625,39 +625,23 @@
           <div class="form-group">
             <label>Caption Style Preset</label>
             <div class="caption-presets-grid">
-              <!-- 1. Speed -->
-              <button class="style-preset-card preset-pill active" type="button" data-style="speed">
+              <!-- 1. SkyGlow -->
+              <button class="style-preset-card preset-pill active" type="button" data-style="skyglow">
+                <div class="style-preview style-preview-skyglow">
+                  <span class="preview-word-white">SKY</span><span class="preview-word-skyglow">GLOW</span>
+                </div>
+                <span class="style-label"><i class="fa-solid fa-wand-magic-sparkles" style="color: #00FF66;"></i> SkyGlow (Reference)</span>
+              </button>
+
+              <!-- 2. Speed Viral -->
+              <button class="style-preset-card preset-pill" type="button" data-style="speed">
                 <div class="style-preview style-preview-speed">
                   <span class="preview-word-white">VIRAL</span> <span class="preview-word-highlight">SPEED</span>
                 </div>
                 <span class="style-label"><i class="fa-solid fa-bolt" style="color: #CCFF00;"></i> Speed Viral</span>
               </button>
 
-              <!-- 2. Hormozi -->
-              <button class="style-preset-card preset-pill" type="button" data-style="hormozi">
-                <div class="style-preview style-preview-hormozi">
-                  <span class="preview-word-white">HORMOZI</span> <span class="preview-word-gold">GOLD</span>
-                </div>
-                <span class="style-label"><i class="fa-solid fa-fire" style="color: #FFDE00;"></i> Hormozi</span>
-              </button>
-
-              <!-- 3. MrBeast -->
-              <button class="style-preset-card preset-pill" type="button" data-style="mrbeast">
-                <div class="style-preview style-preview-mrbeast">
-                  <span class="preview-word-yellow">MR</span><span class="preview-word-green">BEAST</span>
-                </div>
-                <span class="style-label"><i class="fa-solid fa-crown" style="color: #00FF66;"></i> MrBeast</span>
-              </button>
-
-              <!-- 4. Neon Cyber -->
-              <button class="style-preset-card preset-pill" type="button" data-style="neon">
-                <div class="style-preview style-preview-neon">
-                  <span class="preview-word-cyan">NEON</span> <span class="preview-word-magenta">GLOW</span>
-                </div>
-                <span class="style-label"><i class="fa-solid fa-sun" style="color: #00F2FE;"></i> Neon Cyber</span>
-              </button>
-
-              <!-- 5. Dark Box -->
+              <!-- 3. Dark Box -->
               <button class="style-preset-card preset-pill" type="button" data-style="box">
                 <div class="style-preview style-preview-box">
                   <span class="preview-word-boxed">CLEAN BOX</span>
@@ -665,18 +649,10 @@
                 <span class="style-label"><i class="fa-solid fa-square"></i> Dark Box</span>
               </button>
 
-              <!-- 6. Fire Punch -->
-              <button class="style-preset-card preset-pill" type="button" data-style="fire">
-                <div class="style-preview style-preview-fire">
-                  <span class="preview-word-fire">FIRE PUNCH</span>
-                </div>
-                <span class="style-label"><i class="fa-solid fa-fire-flame-curved" style="color: #FF7A00;"></i> Fire</span>
-              </button>
-
-              <!-- 7. Minimal Clean -->
+              <!-- 4. Minimal Sans -->
               <button class="style-preset-card preset-pill" type="button" data-style="clean">
                 <div class="style-preview style-preview-clean">
-                  Minimal Clean
+                  Minimal Sans
                 </div>
                 <span class="style-label"><i class="fa-solid fa-font"></i> Minimal Sans</span>
               </button>
@@ -761,10 +737,14 @@
               <button class="preset-pill active" type="button" data-words="3">3 Words</button>
               <button class="preset-pill" type="button" data-words="4">4 Words</button>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+            <div style="display: flex; align-items: center; gap: 16px; margin-top: 10px; flex-wrap: wrap;">
               <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-primary); font-weight: 500;">
                 <input type="checkbox" id="check-uppercase" checked>
                 ALL CAPS (Uppercase Text)
+              </label>
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-primary); font-weight: 500;">
+                <input type="checkbox" id="check-censor-profanity" checked>
+                Auto-Censor Profanity (F*CK, SH*T, AS*)
               </label>
             </div>
           </div>
@@ -801,7 +781,8 @@
                 <option value="base.en" selected>Whisper Base.en (Fast & Balanced)</option>
                 <option value="tiny.en">Whisper Tiny.en (Ultra-Fast 0.3s)</option>
                 <option value="small.en">Whisper Small.en (High Acoustic Precision)</option>
-                <option value="medium.en">Whisper Medium (Studio Accuracy)</option>
+                <option value="large-v3-turbo-q5_0">Whisper Large v3 Turbo Q5_0 (Studio Reference)</option>
+                <option value="base">Whisper Base Multi-lingual</option>
               </select>
             </div>
           </div>
@@ -861,6 +842,23 @@
                 <input type="range" id="slider-sharpness" min="0.0" max="1.5" step="0.05" value="0.50">
                 <span class="slider-val" id="val-sharpness">0.50x</span>
               </div>
+            </div>
+          </div>
+
+          <!-- Motion Dynamics & Viral Pace Engine -->
+          <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-subtle);">
+            <div style="font-size: 11px; font-weight: 700; color: var(--accent-lime); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
+              <i class="fa-solid fa-bolt"></i> Motion Dynamics & Viral Pace
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-primary); font-weight: 500;">
+                <input type="checkbox" id="check-climax-zoom" style="accent-color: var(--accent-lime);">
+                <span><strong>Climax Zoom Punch</strong> (Smooth 1.07x dramatic pulse at viral climax)</span>
+              </label>
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-primary); font-weight: 500;">
+                <input type="checkbox" id="check-auto-jump-cut" style="accent-color: var(--accent-lime);">
+                <span><strong>Auto-Jump-Cut Silence</strong> (Cuts dead-air gaps &gt; 1.0s with breath padding)</span>
+              </label>
             </div>
           </div>
         </div>
