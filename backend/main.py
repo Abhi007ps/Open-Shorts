@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from backend.clipper import probe_video, auto_generate_clips, generate_preview_frame, render_clip
 from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, get_hardware_profile, get_best_encoder
-from backend.transcriber import transcribe_video, group_words_into_segments, MODELS_DIR, JobCancelledError
+from backend.transcriber import transcribe_video, group_words_into_segments, ensure_whisper_model, MODELS_DIR, JobCancelledError
 from backend.subtitle_generator import generate_ass_subtitles, generate_srt_subtitles
 from backend.viral_detector import detect_viral_moments
 
@@ -1309,15 +1309,18 @@ def _do_transcribe(req: TranscribeReq, cancel_event: Optional[threading.Event] =
         progress_cb(15, init_step)
     
     try:
-        # Pick model if specified
+        # Pick model if specified (auto-download if missing on disk)
         chosen_model = None
         if req.model_name:
             cand1 = os.path.join(MODELS_DIR, f"ggml-{req.model_name}.bin")
             cand2 = os.path.join(MODELS_DIR, req.model_name)
-            if os.path.exists(cand1):
+            if os.path.isfile(cand1) and os.path.getsize(cand1) > 1_000_000:
                 chosen_model = cand1
-            elif os.path.exists(cand2):
+            elif os.path.isfile(cand2) and os.path.getsize(cand2) > 1_000_000:
                 chosen_model = cand2
+            else:
+                on_single_transcribe_progress(f"Downloading Whisper model ({req.model_name})...", 10)
+                chosen_model = ensure_whisper_model(req.model_name)
 
         w_count = req.words_per_line if req.words_per_line is not None else 3
         v_meta = CURRENT_STATE.get("video_meta") or probe_video(video_path)
@@ -1444,10 +1447,24 @@ def _do_transcribe_all_clips(req: TranscribeAllClipsReq, cancel_event: Optional[
     if req.model_name:
         cand1 = os.path.join(MODELS_DIR, f"ggml-{req.model_name}.bin")
         cand2 = os.path.join(MODELS_DIR, req.model_name)
-        if os.path.exists(cand1):
+        if os.path.isfile(cand1) and os.path.getsize(cand1) > 1_000_000:
             chosen_model = cand1
-        elif os.path.exists(cand2):
+        elif os.path.isfile(cand2) and os.path.getsize(cand2) > 1_000_000:
             chosen_model = cand2
+        else:
+            dl_msg = f"Downloading Whisper model ({req.model_name})..."
+            CURRENT_STATE["transcribe_progress"] = {
+                "status": "running",
+                "step": dl_msg,
+                "percent": 8,
+                "elapsed_sec": round(time.time() - start_batch_t0, 1),
+                "current_clip": 1,
+                "total_clips": total_clips,
+                "clip_title": req.clips[0].title if req.clips else "Clip 1"
+            }
+            if progress_cb:
+                progress_cb(8, dl_msg)
+            chosen_model = ensure_whisper_model(req.model_name)
 
     w_count = req.words_per_line if req.words_per_line is not None else 3
     updated_clips = []

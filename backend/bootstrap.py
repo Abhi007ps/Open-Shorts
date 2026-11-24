@@ -62,10 +62,17 @@ def verify_binaries():
         print("  [INFO] Wav2Vec2 Sync:    Optional (using calibrated Whisper DTW)")
 
 def verify_models():
-    """Ensure at least one Whisper GGML speech model is present; auto-download if empty."""
-    from backend.transcriber import ensure_whisper_model
+    """Ensure at least one Whisper GGML speech model is present; auto-download small.en if empty."""
+    from backend.transcriber import ensure_whisper_model, MODELS_DIR
     try:
-        model_path = ensure_whisper_model("base.en")
+        turbo_p = os.path.join(MODELS_DIR, "ggml-large-v3-turbo-q5_0.bin")
+        small_p = os.path.join(MODELS_DIR, "ggml-small.en.bin")
+        if os.path.isfile(turbo_p) and os.path.getsize(turbo_p) > 1_000_000:
+            model_path = turbo_p
+        elif os.path.isfile(small_p) and os.path.getsize(small_p) > 1_000_000:
+            model_path = small_p
+        else:
+            model_path = ensure_whisper_model("small.en")
         size_mb = os.path.getsize(model_path) / (1024 * 1024)
         print(f"  [OK] Whisper Model:   {os.path.basename(model_path)} ({size_mb:.1f} MB ready)")
     except Exception as e:

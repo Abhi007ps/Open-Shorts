@@ -551,28 +551,28 @@ def get_performance_profile(force_refresh: bool = False) -> Dict[str, Any]:
         export_workers = 3
         filter_mode = "ultra"
         default_1080p_bitrate = "15M"
-        whisper_model = "base.en"
+        whisper_model = "large-v3-turbo-q5_0"
         llm_tier = "large"
     elif ((is_hw_enc and (is_dedicated or vram_gb >= 4.0)) and vram_gb >= 4.0) or (cores >= 8 and ram_gb >= 16.0):
         tier = "performance"
         export_workers = 2
         filter_mode = "balanced"
         default_1080p_bitrate = "14M"
-        whisper_model = "base.en"
+        whisper_model = "large-v3-turbo-q5_0"
         llm_tier = "standard"
     elif is_hw_enc or (cores >= 6 and ram_gb >= 12.0):
         tier = "balanced"
         export_workers = 1
         filter_mode = "fast"
         default_1080p_bitrate = "12M"
-        whisper_model = "base.en"
+        whisper_model = "small.en"
         llm_tier = "compact" if (ram_gb < 12.0 and not is_dedicated) else "standard"
     else:
         tier = "eco"
         export_workers = 1
         filter_mode = "eco"
         default_1080p_bitrate = "10M"
-        whisper_model = "tiny.en"
+        whisper_model = "small.en"
         llm_tier = "compact"
 
     profile = {

@@ -4,7 +4,7 @@ Cleans out all previous clips, uploaded streams, exports, temporary cache,
 and session states so the application starts 100% brand new for any new user.
 CRITICALLY PRESERVES:
 - Bundled binaries (bin/ffmpeg.exe, bin/Release/whisper-cli.exe, SIMD DLLs)
-- Downloaded speech models (models/ggml-base.en.bin, etc.)
+- Downloaded speech models (models/ggml-small.en.bin, models/ggml-large-v3-turbo-q5_0.bin, etc.)
 - Demo footage (assets/demo/ or storage/uploads/demo.mp4)
 - Core source code (backend/, frontend/)
 """

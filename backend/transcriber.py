@@ -15,12 +15,10 @@ class JobCancelledError(Exception):
 from backend.hardware import FFMPEG_BIN, WHISPER_CLI, get_cpu_info
 
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
-DEFAULT_MODEL_BASE_EN = os.path.join(MODELS_DIR, "ggml-base.en.bin")
-DEFAULT_MODEL_BASE = os.path.join(MODELS_DIR, "ggml-base.bin")
-DEFAULT_MODEL_EN = os.path.join(MODELS_DIR, "ggml-tiny.en.bin")
-DEFAULT_MODEL_MULTI = os.path.join(MODELS_DIR, "ggml-tiny.bin")
+DEFAULT_MODEL_TURBO = os.path.join(MODELS_DIR, "ggml-large-v3-turbo-q5_0.bin")
+DEFAULT_MODEL_SMALL_EN = os.path.join(MODELS_DIR, "ggml-small.en.bin")
 
-def ensure_whisper_model(preferred_name: str = "base.en") -> str:
+def ensure_whisper_model(preferred_name: str = "small.en") -> str:
     """
     Ensures that a valid GGML model file exists in the models/ directory.
     If the requested model is not found, downloads it cleanly from HuggingFace.
@@ -44,22 +42,22 @@ def ensure_whisper_model(preferred_name: str = "base.en") -> str:
     except Exception as e:
         print(f"[WARN] Failed to download {file_name}: {e}")
 
-    # Check fallbacks already on disk
-    for candidate in [DEFAULT_MODEL_BASE_EN, DEFAULT_MODEL_BASE, DEFAULT_MODEL_EN, DEFAULT_MODEL_MULTI]:
+    # Check fallbacks already on disk (large-v3-turbo-q5_0 and small.en)
+    for candidate in [DEFAULT_MODEL_TURBO, DEFAULT_MODEL_SMALL_EN]:
         if os.path.isfile(candidate) and os.path.getsize(candidate) > 1000000:
             return candidate
 
-    # Fallback auto-download of tiny.en if nothing else exists
-    tiny_name = "ggml-tiny.en.bin"
-    tiny_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{tiny_name}"
-    tiny_path = os.path.join(MODELS_DIR, tiny_name)
+    # Fallback auto-download of small.en if nothing else exists
+    small_name = "ggml-small.en.bin"
+    small_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{small_name}"
+    small_path = os.path.join(MODELS_DIR, small_name)
     try:
         import urllib.request
-        urllib.request.urlretrieve(tiny_url, tiny_path)
-        if os.path.isfile(tiny_path) and os.path.getsize(tiny_path) > 1000000:
-            return tiny_path
+        urllib.request.urlretrieve(small_url, small_path)
+        if os.path.isfile(small_path) and os.path.getsize(small_path) > 1000000:
+            return small_path
     except Exception as e:
-        print(f"[WARN] Failed to download fallback {tiny_name}: {e}")
+        print(f"[WARN] Failed to download fallback {small_name}: {e}")
 
     raise RuntimeError("Whisper speech model missing and automatic download failed. Please check internet connection.")
 
@@ -571,14 +569,9 @@ def transcribe_video(
     if cancel_event and cancel_event.is_set():
         raise JobCancelledError("Transcription cancelled by user")
 
-    # Auto-pick optimal model:
-    # For long livestream files (>300s), auto-pick lightweight tiny.en for 2.6x faster ingestion on desktop CPUs.
-    # For short viral clips (<300s), prioritize base.en for top-tier slang accuracy and alignment.
+    # Auto-pick optimal model: small.en for English/auto, large-v3-turbo-q5_0 for multilingual
     if not model_path or not os.path.isfile(model_path):
-        if duration and duration > 300:
-            pref = "tiny.en" if (language == "en" or language == "auto") else "tiny"
-        else:
-            pref = "base.en" if (language == "en" or language == "auto") else "tiny"
+        pref = "small.en" if language in ("en", "auto") else "large-v3-turbo-q5_0"
         model_path = ensure_whisper_model(pref)
     
     if progress_callback:
@@ -658,7 +651,7 @@ def transcribe_video(
 
         if language and language != "auto":
             cmd += ["-l", language]
-        elif language == "auto" and "tiny.en" not in model_path and "base.en" not in model_path:
+        elif language == "auto" and ".en." not in os.path.basename(model_path).lower() and not os.path.basename(model_path).lower().endswith(".en.bin"):
             cmd += ["-l", "auto"]
 
         pass1_success = False

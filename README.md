@@ -23,7 +23,7 @@
 - **Game-Agnostic Viral Titles**: Generates engaging, context-aware titles without clickbait distortion.
 
 ### 🎨 2. Zero-Blink DTW Karaoke Subtitles & Broadcast Audio Mastering
-- **Millisecond DTW & Phoneme Alignment**: Direct acoustic word-level timestamps via `whisper.cpp` (`tiny.en`, `base.en`, `small.en`, `large-v3-turbo`) with optional Wav2Vec2 phoneme forced alignment.
+- **Millisecond DTW & Phoneme Alignment**: Direct acoustic word-level timestamps via `whisper.cpp` (`large-v3-turbo-q5_0` & `small.en`) with optional Wav2Vec2 phoneme forced alignment.
 - **Zero-Blink Guarantee**: Strictly monotonic word intervals (`end >= start + 0.04s`) with gapless transitions inside phrases to prevent subtitle flickering.
 - **Jitter-Free Multi-Word Karaoke**: Multi-word lines retain stable font scaling and centered positioning while highlighted words transition smoothly.
 - **Viral Styling Presets**: Ready-to-use presets including **SkyGlow** (upright Poppins Black with dual-pass neon glow, 60fps subtle zoom, and per-character fade sweep), **Speed Viral**, **Dark Box**, and **Minimal Sans**.
@@ -65,7 +65,7 @@
 When you launch `run.bat`:
 - An isolated Python virtual environment (`.venv`) is created automatically if Python is present.
 - All Python dependencies from `requirements.txt` are verified and installed (including `fastapi`, `uvicorn`, `yt-dlp`, `pillow`, `aiofiles`, `pydantic`).
-- Whisper GGML models (e.g. `ggml-tiny.en.bin`, `ggml-base.en.bin`, `ggml-small.en.bin`, `ggml-large-v3-turbo.bin`) are downloaded on-demand when transcribing.
+- Whisper GGML models (`ggml-large-v3-turbo-q5_0.bin` & `ggml-small.en.bin`) are downloaded on-demand when transcribing.
 
 ### System Requirements & External Binaries:
 For the complete feature set, ensure the following are available on your system `PATH` or placed in `bin/`:

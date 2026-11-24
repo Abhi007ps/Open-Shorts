@@ -942,14 +942,21 @@ def transcribe_audio_peaks(
         print("[WARN] Whisper CLI not found, skipping peak transcription")
         return peaks
 
-    # Find the best available whisper model (tiny.en for speed)
+    # Find the best available whisper model (small.en or large-v3-turbo-q5_0)
     models_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
     model_path = None
-    for mname in ["ggml-tiny.en.bin", "ggml-tiny.bin", "ggml-base.en.bin", "ggml-base.bin"]:
+    for mname in ["ggml-small.en.bin", "ggml-large-v3-turbo-q5_0.bin"]:
         mpath = os.path.join(models_dir, mname)
         if os.path.isfile(mpath) and os.path.getsize(mpath) > 1_000_000:
             model_path = mpath
             break
+
+    if not model_path:
+        try:
+            from backend.transcriber import ensure_whisper_model
+            model_path = ensure_whisper_model("small.en")
+        except Exception as e:
+            print(f"[WARN] Could not ensure Whisper model for peak transcription: {e}")
     
     if not model_path:
         print("[WARN] No Whisper model found, skipping peak transcription")

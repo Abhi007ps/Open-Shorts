@@ -68,7 +68,8 @@ const state = {
     shadow_depth: 2,
     is_uppercase: true,
     words_per_line: 4,
-    model_name: "base.en",
+    model_name: "large-v3-turbo-q5_0",
+    sync_offset_ms: 0,
     censor_profanity: true,
     preview_text: "THIS IS WRONG WITH TODAY'S SOCIETY"
   },
@@ -88,6 +89,10 @@ const state = {
 };
 
 let previewDebounceTimer = null;
+
+function normalizeWhisperModelName(name) {
+  return (name === "large-v3-turbo-q5_0" || name === "small.en") ? name : "small.en";
+}
 
 // =========================================================================
 // SmoothProgressBar: 60FPS Asymptotic Smooth Progress & Cancellation Engine
@@ -1151,6 +1156,14 @@ function initPresets() {
     fontSel.addEventListener("change", (e) => {
       state.subtitlesConfig.font_family = e.target.value;
       requestPreviewUpdate();
+    });
+  }
+
+  // Whisper model selector
+  const modelSel = document.getElementById("select-whisper-model");
+  if (modelSel) {
+    modelSel.addEventListener("change", (e) => {
+      state.subtitlesConfig.model_name = normalizeWhisperModelName(e.target.value);
     });
   }
 
@@ -2292,6 +2305,12 @@ function syncUIFromState() {
     fontSel.value = state.subtitlesConfig.font_family;
   }
 
+  state.subtitlesConfig.model_name = normalizeWhisperModelName(state.subtitlesConfig.model_name);
+  const modelSel = document.getElementById("select-whisper-model");
+  if (modelSel) {
+    modelSel.value = state.subtitlesConfig.model_name;
+  }
+
   // Subtitles Enabled Toggle & Banner Sync
   const isSubEnabled = state.subtitlesConfig.enabled !== false;
   const toggleSub = document.getElementById("toggle-subtitles-enabled");
@@ -2440,6 +2459,7 @@ async function loadMasterTemplate() {
     }
     if (state.masterTemplate.subtitle_config) {
       state.subtitlesConfig = Object.assign({}, state.subtitlesConfig, state.masterTemplate.subtitle_config);
+      state.subtitlesConfig.model_name = normalizeWhisperModelName(state.subtitlesConfig.model_name);
     }
   }
 
@@ -2534,6 +2554,7 @@ window.applyMasterTemplateToAllClips = function(sourceClipId = null) {
     if (src && src.template_config) {
       state.template = JSON.parse(JSON.stringify(src.template_config));
       state.subtitlesConfig = JSON.parse(JSON.stringify(src.subtitle_config || state.subtitlesConfig));
+      state.subtitlesConfig.model_name = normalizeWhisperModelName(state.subtitlesConfig.model_name);
     }
   } else {
     // If master template is saved, apply it!
@@ -2541,6 +2562,7 @@ window.applyMasterTemplateToAllClips = function(sourceClipId = null) {
       state.template = JSON.parse(JSON.stringify(state.masterTemplate.template_config));
       if (state.masterTemplate.subtitle_config) {
         state.subtitlesConfig = JSON.parse(JSON.stringify(state.masterTemplate.subtitle_config));
+        state.subtitlesConfig.model_name = normalizeWhisperModelName(state.subtitlesConfig.model_name);
       }
     } else {
       // Save active clip settings as master template now!
@@ -2869,6 +2891,7 @@ window.selectClipForPreview = function(id, startTime) {
   if (targetClip && targetClip.template_config) {
     state.template = JSON.parse(JSON.stringify(targetClip.template_config));
     state.subtitlesConfig = JSON.parse(JSON.stringify(targetClip.subtitle_config));
+    state.subtitlesConfig.model_name = normalizeWhisperModelName(state.subtitlesConfig.model_name);
     syncUIFromState();
   }
   state.previewTime = startTime + 3.0;
@@ -3211,7 +3234,7 @@ async function runTranscribeAllClips() {
 
   try {
     const lang = document.getElementById("select-lang")?.value || "auto";
-    const chosenModel = document.getElementById("select-whisper-model")?.value || (state.subtitlesConfig.model_name || "base.en");
+    const chosenModel = normalizeWhisperModelName(document.getElementById("select-whisper-model")?.value || state.subtitlesConfig.model_name || "large-v3-turbo-q5_0");
     const wordsAtATime = state.subtitlesConfig.words_per_line !== undefined ? state.subtitlesConfig.words_per_line : 3;
     const checkStreamer = document.getElementById("check-streamer-voice-only");
     const streamerVoiceFocus = checkStreamer ? checkStreamer.checked : true;
@@ -3339,7 +3362,7 @@ async function runTranscription(forSelectedClip = false) {
 
   try {
     const lang = document.getElementById("select-lang")?.value || "auto";
-    const chosenModel = document.getElementById("select-whisper-model")?.value || (state.subtitlesConfig.model_name || "base.en");
+    const chosenModel = normalizeWhisperModelName(document.getElementById("select-whisper-model")?.value || state.subtitlesConfig.model_name || "large-v3-turbo-q5_0");
     const wordsAtATime = state.subtitlesConfig.words_per_line !== undefined ? state.subtitlesConfig.words_per_line : 3;
     const checkStreamer = document.getElementById("check-streamer-voice-only");
     const streamerVoiceFocus = checkStreamer ? checkStreamer.checked : true;

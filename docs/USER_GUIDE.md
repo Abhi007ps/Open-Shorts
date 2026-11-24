@@ -60,7 +60,7 @@ OpenShorts Studio Pro features an obsidian dark-mode interface with a 2-pane Non
 ![Burnt Karaoke Subtitles Verification Frame](images/subtitles_mrbeast_verified.jpg)
 
 ### Millisecond Dynamic Time Warping (DTW) & Phoneme Alignment:
-- Whisper acoustic neural alignment (`tiny.en`, `base.en`, `small.en`, `large-v3-turbo`) produces millisecond word start and end timestamps, refined via optional Wav2Vec2 forced alignment.
+- Whisper acoustic neural alignment (`large-v3-turbo-q5_0` & `small.en`) produces millisecond word start and end timestamps, refined via optional Wav2Vec2 forced alignment.
 - Multi-word phrases maintain strict monotonic intervals (`end >= start + 0.04s`) with **zero blank gaps between words**, eliminating subtitle blinking.
 
 ### Viral Caption Presets:
