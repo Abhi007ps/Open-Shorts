@@ -119,6 +119,7 @@ document.addEventListener("DOMContentLoaded", () => {
   safeInit(initLLMStatus, "initLLMStatus");
   safeInit(initSafeZoneOverlay, "initSafeZoneOverlay");
   safeInit(initRangeSliderProgress, "initRangeSliderProgress");
+  safeInit(initWorkspaceResizer, "initWorkspaceResizer");
   
   safeInit(loadMasterTemplate, "loadMasterTemplate");
   safeInit(fetchOutputs, "fetchOutputs");
@@ -537,6 +538,132 @@ function initSafeZoneOverlay() {
     const isVisible = overlay.style.display !== "none";
     overlay.style.display = isVisible ? "none" : "block";
     btnSafezone.classList.toggle("active", !isVisible);
+  });
+}
+
+/**
+ * Smooth Draggable Split-Pane Resizer
+ * Allows user to drag the divider between the left inspector working area and right preview stage.
+ * Persists inspector width % in localStorage ("openshorts_inspector_pct").
+ * Double-click resets to default 58% / 42% split.
+ */
+function initWorkspaceResizer() {
+  const resizer = document.getElementById("workspace-resizer");
+  const container = document.querySelector(".app-container");
+  if (!resizer || !container) return;
+
+  const DEFAULT_PCT = 58;
+  const MIN_PCT = 30;
+  const MAX_PCT = 72;
+  const MIN_LEFT_PX = 360;
+  const MIN_RIGHT_PX = 340;
+  const RESIZER_WIDTH_PX = 8;
+
+  // 1. Initial Load: Read persisted or default width %
+  const readSavedWidth = () => {
+    try {
+      const saved = localStorage.getItem("openshorts_inspector_pct");
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed) && parsed >= MIN_PCT && parsed <= MAX_PCT) {
+          return parsed;
+        }
+      }
+    } catch (_) {}
+    return DEFAULT_PCT;
+  };
+
+  const applyWidth = (pct) => {
+    const clamped = Math.max(MIN_PCT, Math.min(MAX_PCT, pct));
+    container.style.setProperty("--inspector-width", `${clamped.toFixed(2)}%`);
+    return clamped;
+  };
+
+  let currentPct = applyWidth(readSavedWidth());
+
+  const triggerLayoutRefresh = () => {
+    if (typeof window.syncCropCanvasWithVideo === "function") {
+      window.syncCropCanvasWithVideo(false);
+    }
+    const phoneScreen = document.getElementById("phone-screen");
+    if (phoneScreen && typeof window.updateFacecamHandleUI === "function") {
+      window.updateFacecamHandleUI();
+    }
+    window.dispatchEvent(new Event("resize"));
+  };
+
+  // 2. Drag Logic with Pointer Events & Capture
+  let isDragging = false;
+  let rafId = null;
+
+  resizer.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    e.preventDefault();
+    isDragging = true;
+
+    try {
+      resizer.setPointerCapture(e.pointerId);
+    } catch (_) {}
+
+    resizer.classList.add("is-resizing");
+    document.body.classList.add("is-resizing-pane");
+  });
+
+  resizer.addEventListener("pointermove", (e) => {
+    if (!isDragging) return;
+    e.preventDefault();
+
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(() => {
+      const rect = container.getBoundingClientRect();
+      if (!rect.width) return;
+
+      const rawLeftPx = e.clientX - rect.left;
+      const maxLeftPx = rect.width - MIN_RIGHT_PX - RESIZER_WIDTH_PX;
+      const clampedLeftPx = Math.max(MIN_LEFT_PX, Math.min(maxLeftPx, rawLeftPx));
+      const newPct = (clampedLeftPx / rect.width) * 100;
+
+      currentPct = applyWidth(newPct);
+      triggerLayoutRefresh();
+    });
+  });
+
+  const handlePointerEnd = (e) => {
+    if (!isDragging) return;
+    isDragging = false;
+
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+
+    try {
+      if (resizer.hasPointerCapture(e.pointerId)) {
+        resizer.releasePointerCapture(e.pointerId);
+      }
+    } catch (_) {}
+
+    resizer.classList.remove("is-resizing");
+    document.body.classList.remove("is-resizing-pane");
+
+    try {
+      localStorage.setItem("openshorts_inspector_pct", currentPct.toFixed(2));
+    } catch (_) {}
+
+    triggerLayoutRefresh();
+  };
+
+  resizer.addEventListener("pointerup", handlePointerEnd);
+  resizer.addEventListener("pointercancel", handlePointerEnd);
+
+  // 3. Double-Click Reset to Default (58% / 42%)
+  resizer.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    currentPct = applyWidth(DEFAULT_PCT);
+    try {
+      localStorage.setItem("openshorts_inspector_pct", DEFAULT_PCT.toString());
+    } catch (_) {}
+    triggerLayoutRefresh();
   });
 }
 
