@@ -658,112 +658,140 @@ def api_scan_stream_audio(req: ProbeStreamReq):
         from backend.stream_loader import (
             probe_stream, download_stream_audio, scan_audio_energy_peaks,
             hunt_stream_viral_moments, transcribe_audio_peaks,
-            fetch_stream_transcript, extract_heatmap_peaks, _PROBED_INFO_CACHE
+            fetch_stream_transcript, extract_heatmap_peaks, _PROBED_INFO_CACHE,
+            zoom_window_in_bucket, scan_transcript_story_bursts, build_comment_spike_windows
         )
-        from backend.llm_engine import curate_story_clips_from_windows
+        from backend.llm_engine import curate_story_clips_from_windows, curate_tournament_top_clips
 
         CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 10, "step": "Probing stream metadata & audience signals..."}
         meta = probe_stream(req.url)
         dur = meta.get("duration", 0)
         cached_info = _PROBED_INFO_CACHE.get(req.url) or {}
 
-        # FAST PATH: Check if native transcript and heatmap/chapters are available
+        # FAST PATH: Check if native transcript and multi-signal funnel are available
         transcript_segs = fetch_stream_transcript(cached_info)
-        heatmap_peaks = extract_heatmap_peaks(cached_info, duration=dur, top_k=10)
+        effective_dur = max(float(dur or 0.0), float(transcript_segs[-1].get("end", 0.0)) if transcript_segs else 0.0)
 
         if transcript_segs:
-            peak_sources = list(heatmap_peaks) if heatmap_peaks else []
-            if not peak_sources and meta.get("chapters"):
+            CURRENT_STATE["stream_progress"] = {
+                "status": "processing",
+                "percent": 25,
+                "step": f"Harvesting 3-signal funnel (Heatmap, Chat Spikes, Story Bursts) across {int(effective_dur//60)}m stream..."
+            }
+
+            heatmap_peaks = extract_heatmap_peaks(cached_info, duration=effective_dur, top_k=20)
+            comment_peaks = build_comment_spike_windows(req.url, duration=effective_dur, top_k=12)
+            burst_peaks = scan_transcript_story_bursts(transcript_segs, video_duration=effective_dur, top_k=14)
+
+            all_candidates = []
+            for p in heatmap_peaks:
+                all_candidates.append(dict(p))
+            for p in comment_peaks:
+                all_candidates.append(dict(p))
+            for p in burst_peaks:
+                all_candidates.append(dict(p))
+
+            # Chapters fallback if fewer than 8 candidates
+            if len(all_candidates) < 8 and meta.get("chapters"):
                 for ch_idx, ch in enumerate(meta["chapters"][:8], 1):
-                    ch_c = (ch["start"] + ch["end"]) / 2
-                    peak_sources.append({
+                    ch_c = (ch["start"] + ch["end"]) / 2.0
+                    all_candidates.append({
                         "rank": ch_idx,
                         "center_sec": round(ch_c, 1),
                         "start": ch["start"],
                         "end": ch["end"],
-                        "virality_score": 90,
+                        "virality_score": 88,
                         "source": "chapter"
                     })
 
-            # If still no peaks (no heatmap & no chapters, common on fresh VODs):
-            # Build up to 10 evenly spaced ~75s transcript windows covering the stream,
-            # prioritizing windows with the highest word density
-            if not peak_sources:
-                stream_dur = max(dur, float(transcript_segs[-1].get("end", 0.0)))
-                if stream_dur > 30.0:
-                    window_span = 75.0
-                    stride = max(45.0, (stream_dur - window_span) / 16.0) if stream_dur > window_span else 30.0
-                    dense_candidates = []
-                    curr_center = min(stream_dur / 2.0, window_span / 2.0)
-                    while curr_center < (stream_dur - 15.0):
-                        w_s = max(0.0, curr_center - 37.5)
-                        w_e = min(stream_dur, curr_center + 37.5)
-                        w_words = sum(
-                            len(s.get("text", "").split())
-                            for s in transcript_segs
-                            if float(s.get("end", 0)) >= w_s and float(s.get("start", 0)) <= w_e
-                        )
-                        if w_words >= 8:
-                            dense_candidates.append({
-                                "center_sec": round(curr_center, 1),
-                                "start": w_s,
-                                "end": w_e,
-                                "word_count": w_words,
-                                "virality_score": 85,
-                                "source": "transcript_density"
-                            })
-                        curr_center += stride
+            # Merge and deduplicate candidates within 75s of each other
+            # When 2+ independent signals agree on the same moment, boost peak_score by +6 (capped at 99) and label source as "multi_signal"
+            all_candidates.sort(key=lambda x: float(x.get("virality_score", 80)), reverse=True)
+            merged_peaks = []
+            for cand in all_candidates:
+                c_time = float(cand.get("center_sec", 0.0))
+                matched = False
+                for m in merged_peaks:
+                    if abs(c_time - float(m.get("center_sec", 0.0))) <= 75.0:
+                        matched = True
+                        cur_score = int(m.get("virality_score", 85))
+                        m["virality_score"] = min(99, cur_score + 6)
+                        m["source"] = "multi_signal"
+                        if "bucket_start" in cand and "bucket_start" not in m:
+                            m["bucket_start"] = cand["bucket_start"]
+                            m["bucket_end"] = cand.get("bucket_end")
+                        break
+                if not matched:
+                    merged_peaks.append(dict(cand))
 
-                    dense_candidates.sort(key=lambda x: x["word_count"], reverse=True)
-                    selected_dense = dense_candidates[:10]
-                    selected_dense.sort(key=lambda x: x["center_sec"])
-                    for r_idx, cand in enumerate(selected_dense, 1):
-                        cand["rank"] = r_idx
-                        peak_sources.append(cand)
+            merged_peaks.sort(key=lambda x: int(x.get("virality_score", 80)), reverse=True)
+            top_peaks = merged_peaks[:24]
 
-            if peak_sources:
+            if top_peaks:
                 CURRENT_STATE["stream_progress"] = {
                     "status": "processing",
                     "percent": 45,
-                    "step": f"Found native captions ({len(transcript_segs)} segments)! Running Story Curation with Qwen3..."
+                    "step": f"Identified {len(top_peaks)} high-virality multi-signal windows! Running 2-Round Qwen3 Story Tournament..."
                 }
 
                 windows = []
-                for w_idx, p in enumerate(peak_sources[:12], 1):
+                for w_idx, p in enumerate(top_peaks, 1):
                     p_center = float(p.get("center_sec", 0.0))
-                    w_start = max(0.0, p_center - 35.0)
-                    w_end = min(dur, p_center + 40.0)
+                    b_st = p.get("bucket_start")
+                    b_en = p.get("bucket_end")
+                    if b_st is not None and b_en is not None:
+                        z_center, w_start, w_end = zoom_window_in_bucket(
+                            transcript_segs,
+                            bucket_start=float(b_st),
+                            bucket_end=float(b_en),
+                            fallback_center=p_center,
+                            video_duration=effective_dur,
+                            window_span=90.0
+                        )
+                    else:
+                        z_center = p_center
+                        w_start = max(0.0, round(p_center - 40.0, 1))
+                        w_end = min(effective_dur, round(p_center + 50.0, 1))
 
                     matching = [
                         s for s in transcript_segs
-                        if float(s.get("end", 0)) >= w_start and float(s.get("start", 0)) <= w_end
+                        if float(s.get("end", 0.0)) >= w_start and float(s.get("start", 0.0)) <= w_end
                     ]
-                    t_lines = [f"[{float(s.get('start', 0)):.1f}s] {s.get('text', '').strip()}" for s in matching if s.get("text")]
+                    t_lines = []
+                    char_count = 0
+                    for s in matching[:18]:
+                        txt = s.get("text", "").strip()
+                        if txt:
+                            line_str = f"[{float(s.get('start', 0.0)):.1f}s] {txt}"
+                            if char_count + len(line_str) > 750:
+                                break
+                            t_lines.append(line_str)
+                            char_count += len(line_str)
+
                     spoken_text = " ".join(s.get("text", "").strip() for s in matching)
 
                     windows.append({
                         "window_id": w_idx,
                         "source": p.get("source", "heatmap"),
                         "peak_score": int(p.get("virality_score", 90)),
-                        "center_sec": p_center,
+                        "center_sec": round(z_center, 1),
                         "start_bound": w_start,
                         "end_bound": w_end,
                         "transcript_lines": t_lines,
-                        "spoken_text": spoken_text
+                        "spoken_text": spoken_text[:800],
+                        "orig_cand": p
                     })
 
-                CURRENT_STATE["stream_progress"] = {
-                    "status": "processing",
-                    "percent": 75,
-                    "step": "Single-pass story arc evaluation with Qwen3..."
-                }
+                def t_progress(msg, pct):
+                    CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": pct, "step": msg}
 
-                curated_clips, curation_reason = curate_story_clips_from_windows(
+                curated_clips, curation_reason = curate_tournament_top_clips(
                     windows=windows,
-                    video_duration=dur,
+                    video_duration=effective_dur,
                     target_count=8,
                     min_duration=15.0,
-                    max_duration=48.0
+                    max_duration=50.0,
+                    progress_callback=t_progress
                 )
 
                 if curated_clips:
@@ -774,7 +802,7 @@ def api_scan_stream_audio(req: ProbeStreamReq):
                     CURRENT_STATE["stream_progress"] = {
                         "status": "completed",
                         "percent": 100,
-                        "step": f"Curated {len(curated_clips)} viral stories with Qwen3 in seconds (Zero Download)!"
+                        "step": f"Tournament Champion Pass selected {len(curated_clips)} viral stories with Qwen3 (Zero Download)!"
                     }
                     return {
                         "status": "success",
@@ -793,14 +821,15 @@ def api_scan_stream_audio(req: ProbeStreamReq):
         audio_file_path = audio_res.get("audio_path")
 
         try:
-            CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 70, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
-            peaks = scan_audio_energy_peaks(audio_file_path, duration=dur)
+            CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 65, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
+            top_k_audio = 14 if effective_dur > 10800 else 10
+            peaks = scan_audio_energy_peaks(audio_file_path, duration=effective_dur, top_k=top_k_audio)
 
             if peaks:
                 n_peaks = len(peaks)
                 CURRENT_STATE["stream_progress"] = {
                     "status": "processing",
-                    "percent": 82,
+                    "percent": 75,
                     "step": f"Transcribing {n_peaks} peak moments with Whisper for real context..."
                 }
                 try:
@@ -808,15 +837,52 @@ def api_scan_stream_audio(req: ProbeStreamReq):
                 except Exception as trans_err:
                     print(f"[WARN] Peak transcription failed, using energy-only titles: {trans_err}")
 
-            CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 95, "step": "Combining chat signals & chapter markers..."}
-            moments = hunt_stream_viral_moments(req.url, dur, meta=meta, audio_peaks=peaks)
-            if not isinstance(moments, list):
-                moments = []
+            # Convert transcribed peaks into candidate windows for tournament curation
+            audio_windows = []
+            if peaks:
+                for p_idx, p in enumerate(peaks, 1):
+                    p_c = float(p.get("center_sec") or (float(p.get("start", 0)) + float(p.get("end", 30))) / 2.0)
+                    w_s = max(0.0, p_c - 30.0)
+                    w_e = min(effective_dur, p_c + 35.0)
+                    lines = p.get("transcript_lines") or []
+                    if not lines and p.get("spoken_text"):
+                        lines = [f"[{p_c:.1f}s] {p.get('spoken_text')}"]
+                    audio_windows.append({
+                        "window_id": p_idx,
+                        "source": p.get("reaction_category", "Audio Surge"),
+                        "peak_score": int(p.get("virality_score", 88)),
+                        "center_sec": p_c,
+                        "start_bound": w_s,
+                        "end_bound": w_e,
+                        "transcript_lines": lines,
+                        "spoken_text": p.get("spoken_text", ""),
+                        "orig_cand": p
+                    })
+
+            moments = []
+            if audio_windows:
+                CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 88, "step": "Running 2-Round Qwen3 Story Tournament on audio peaks..."}
+                curated_audio, c_reason = curate_tournament_top_clips(
+                    windows=audio_windows,
+                    video_duration=effective_dur,
+                    target_count=8,
+                    min_duration=15.0,
+                    max_duration=50.0,
+                    progress_callback=cb
+                )
+                if curated_audio:
+                    moments = curated_audio
+
+            if not moments:
+                CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 95, "step": "Combining chat signals & chapter markers..."}
+                moments = hunt_stream_viral_moments(req.url, effective_dur, meta=meta, audio_peaks=peaks)
+                if not isinstance(moments, list):
+                    moments = []
 
             # Store peak transcriptions in state so slice loading can reuse them
             CURRENT_STATE["peak_transcriptions"] = {
                 str(round(p.get("start", 0), 1)): p.get("spoken_text", "")
-                for p in peaks if p.get("has_transcript")
+                for p in (peaks or []) if p.get("has_transcript")
             }
 
             CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": f"Found {len(moments)} viral moments with real dialogue context!"}

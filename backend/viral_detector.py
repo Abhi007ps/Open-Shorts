@@ -100,11 +100,13 @@ def extract_audio_features(video_path: str, sample_rate: int = 8000, window_sec:
                 # RMS
                 sum_sq = sum(s * s for s in samples)
                 r_list.append(math.sqrt(sum_sq / num_s))
-                # ZCR
-                zcr = sum(
-                    1 for j in range(1, num_s)
-                    if (samples[j] >= 0 and samples[j-1] < 0) or (samples[j] < 0 and samples[j-1] >= 0)
-                ) / num_s
+                # ZCR with adaptive striding for ultra-fast scanning on 10h-20h streams
+                z_step = 4 if (max_duration and max_duration > 7200) else 2
+                z_count = sum(
+                    1 for j in range(z_step, num_s, z_step)
+                    if (samples[j] >= 0 and samples[j - z_step] < 0) or (samples[j] < 0 and samples[j - z_step] >= 0)
+                )
+                zcr = (z_count * z_step) / num_s
                 z_list.append(zcr)
         except Exception as e:
             print(f"Chunked audio streaming warning: {e}")

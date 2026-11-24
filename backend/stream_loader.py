@@ -139,11 +139,11 @@ def probe_stream(url: str) -> Dict[str, Any]:
         "has_captions": has_captions
     }
 
-def extract_heatmap_peaks(info: Dict[str, Any], duration: float, top_k: int = 10) -> List[Dict[str, Any]]:
+def extract_heatmap_peaks(info: Dict[str, Any], duration: float, top_k: int = 20) -> List[Dict[str, Any]]:
     """
     Extracts high-intensity audience re-watch peaks from YouTube's native 'heatmap' curve.
     Finds local maxima above the median intensity, enforcing >=65s separation between peaks.
-    Returns ranked candidate windows [start, end] centered at each peak.
+    Returns ranked candidate windows [start, end] centered at each peak with raw bucket bounds.
     """
     raw_heatmap = info.get("heatmap") or []
     if not raw_heatmap or not isinstance(raw_heatmap, list):
@@ -206,12 +206,187 @@ def extract_heatmap_peaks(info: Dict[str, Any], duration: float, top_k: int = 10
             "start": w_start,
             "end": w_end,
             "duration": dur,
+            "bucket_start": round(c["start_time"], 1),
+            "bucket_end": round(c["end_time"], 1),
             "heatmap_value": round(val_norm, 3),
             "virality_score": virality,
             "source": "heatmap",
             "reason": f"🔥 Most Replayed Heatmap Peak ({int(val_norm * 100)}% Re-watch Intensity)",
             "title": f"Rank #{rank} • 🔥 MOST REPLAYED MOMENT ON STREAM",
             "badge_color": "#EF4444" if rank <= 2 else "#F59E0B"
+        })
+        if len(peaks) >= top_k:
+            break
+
+    return peaks
+
+def zoom_window_in_bucket(
+    transcript_segs: List[Dict[str, Any]],
+    bucket_start: float,
+    bucket_end: float,
+    fallback_center: float,
+    video_duration: float,
+    window_span: float = 90.0
+) -> Tuple[float, float, float]:
+    """
+    On 3h-12h streams, a single YouTube heatmap bucket can be 2 to 7+ minutes wide.
+    Whenever (bucket_end - bucket_start) > window_span and transcript_segs exist,
+    slides a 60s window (step 15s) across all transcript segments inside [bucket_start, bucket_end]
+    scoring dialogue density + excitement cues (!, ?, laughter, shock/reaction keywords),
+    and returns (best_center, w_start, w_end) centered on the hottest 90-second sub-region.
+    Otherwise returns (fallback_center, max(0.0, fallback_center - 40.0), min(video_duration, fallback_center + 50.0)).
+    """
+    if (bucket_end - bucket_start) > window_span and transcript_segs:
+        bucket_segs = [
+            s for s in transcript_segs
+            if float(s.get("end", 0.0)) >= bucket_start and float(s.get("start", 0.0)) <= bucket_end
+        ]
+        if bucket_segs:
+            excite_kw = {"wait", "what", "no way", "bro", "haha", "omg", "crazy", "backflip", "clip", "hell", "oh my god", "holy", "stop", "laugh", "look", "insane", "clutch", "god", "wtf", "dude"}
+            best_center = fallback_center
+            max_score = -1.0
+
+            t_curr = bucket_start
+            while t_curr + 30.0 <= bucket_end:
+                win_start = t_curr
+                win_end = min(bucket_end, win_start + 60.0)
+                win_center = (win_start + win_end) / 2.0
+
+                win_words = 0
+                win_exclaim = 0
+                win_kw = 0
+
+                for s in bucket_segs:
+                    s_st = float(s.get("start", 0.0))
+                    s_en = float(s.get("end", 0.0))
+                    if s_en >= win_start and s_st <= win_end:
+                        txt = str(s.get("text", "")).lower()
+                        win_words += len(txt.split())
+                        win_exclaim += (txt.count("!") + txt.count("?"))
+                        for kw in excite_kw:
+                            if kw in txt:
+                                win_kw += 1
+
+                score = win_words * 0.5 + win_exclaim * 4.0 + win_kw * 6.0
+                if score > max_score:
+                    max_score = score
+                    best_center = win_center
+
+                t_curr += 15.0
+
+            if max_score > 0:
+                half = window_span / 2.0
+                w_start = max(0.0, round(best_center - half, 1))
+                w_end = min(video_duration, round(w_start + window_span, 1))
+                if w_end - w_start < window_span:
+                    w_start = max(0.0, round(w_end - window_span, 1))
+                return (round(best_center, 1), w_start, w_end)
+
+    w_start = max(0.0, round(fallback_center - 40.0, 1))
+    w_end = min(video_duration, round(fallback_center + 50.0, 1))
+    return (round(fallback_center, 1), w_start, w_end)
+
+def scan_transcript_story_bursts(
+    transcript_segs: List[Dict[str, Any]],
+    video_duration: float,
+    top_k: int = 14
+) -> List[Dict[str, Any]]:
+    """
+    Scans 100% of the transcript across the entire stream using a 60-second sliding window
+    (30s stride) in pure Python. Scores each window by word pace, exclamations/questions (!, ?),
+    and reaction/comedy/story keywords, penalizing housekeeping phrases.
+    Enforces >=90s separation and returns up to top_k ranked peak dicts with source: 'transcript_burst'.
+    """
+    if not transcript_segs or video_duration <= 0.0:
+        return []
+
+    burst_kw = {
+        "wait": 2.0, "what": 2.0, "no way": 4.0, "bro": 1.5, "haha": 2.5,
+        "omg": 3.0, "crazy": 3.0, "backflip": 4.5, "clip": 3.5, "hell": 1.5,
+        "oh my god": 3.5, "holy": 2.5, "stop": 1.5, "laugh": 2.5, "dude": 1.0,
+        "clutch": 3.5, "insane": 3.5, "die": 1.5, "win": 2.0, "god": 1.5,
+        "unreal": 3.0, "shut up": 2.5, "did that": 3.0, "look at": 2.0
+    }
+    penalty_phrases = ["thanks for the sub", "thank you for the sub", "donation", "brb", "check settings", "be right back", "prime gaming"]
+
+    window_size = 60.0
+    stride = 30.0
+
+    candidates = []
+    t_max = max(video_duration, float(transcript_segs[-1].get("end", 0.0)))
+
+    t_curr = 0.0
+    while t_curr + 20.0 <= t_max:
+        w_start = t_curr
+        w_end = min(t_max, w_start + window_size)
+        w_center = (w_start + w_end) / 2.0
+
+        w_text_parts = []
+        w_word_count = 0
+        w_exclaim = 0
+        w_kw_score = 0.0
+        w_penalty = 0.0
+
+        for s in transcript_segs:
+            s_st = float(s.get("start", 0.0))
+            s_en = float(s.get("end", 0.0))
+            if s_en >= w_start and s_st <= w_end:
+                t = str(s.get("text", "")).strip()
+                if t:
+                    w_text_parts.append(t)
+                    t_lower = t.lower()
+                    words = t_lower.split()
+                    w_word_count += len(words)
+                    w_exclaim += (t.count("!") + t.count("?"))
+                    for kw, weight in burst_kw.items():
+                        if kw in t_lower:
+                            w_kw_score += weight
+                    for p in penalty_phrases:
+                        if p in t_lower:
+                            w_penalty += 8.0
+
+        if w_word_count >= 8:
+            full_snippet = " ".join(w_text_parts)
+            pace_score = min(25.0, (w_word_count / window_size) * 12.0)
+            exclaim_score = min(20.0, w_exclaim * 4.0)
+            kw_score = min(40.0, w_kw_score * 3.0)
+            total_raw = pace_score + exclaim_score + kw_score - w_penalty
+
+            if total_raw > 15.0:
+                norm_score = min(98, max(75, int(70 + (total_raw / 60.0) * 28)))
+                candidates.append({
+                    "center_sec": round(w_center, 1),
+                    "start": round(w_start, 1),
+                    "end": round(w_end, 1),
+                    "raw_score": total_raw,
+                    "virality_score": norm_score,
+                    "snippet": full_snippet[:120],
+                    "word_count": w_word_count
+                })
+
+        t_curr += stride
+
+    candidates.sort(key=lambda x: x["raw_score"], reverse=True)
+
+    peaks = []
+    seen_centers = []
+    for c in candidates:
+        center = c["center_sec"]
+        if any(abs(center - sc) < 90.0 for sc in seen_centers):
+            continue
+        seen_centers.append(center)
+        rank = len(peaks) + 1
+        peaks.append({
+            "rank": rank,
+            "center_sec": center,
+            "start": c["start"],
+            "end": c["end"],
+            "duration": round(c["end"] - c["start"], 1),
+            "virality_score": c["virality_score"],
+            "source": "transcript_burst",
+            "snippet": c["snippet"],
+            "reason": f"💬 High-Energy Dialogue Spike ({c['word_count']} words, reaction burst)",
+            "title": f"Rank #{rank} • 🔥 DIALOGUE & REACTION BURST"
         })
         if len(peaks) >= top_k:
             break
@@ -267,7 +442,7 @@ def fetch_stream_transcript(
     if json3_url:
         try:
             req = urllib.request.Request(json3_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10.0) as resp:
+            with urllib.request.urlopen(req, timeout=30.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 events = data.get("events", [])
                 segments = []
@@ -292,7 +467,7 @@ def fetch_stream_transcript(
     if vtt_url:
         try:
             req = urllib.request.Request(vtt_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10.0) as resp:
+            with urllib.request.urlopen(req, timeout=30.0) as resp:
                 vtt_text = resp.read().decode("utf-8", errors="ignore")
                 segments = []
                 # Match VTT timestamps e.g. 00:01:23.450 --> 00:01:26.780
@@ -916,7 +1091,7 @@ def extract_stream_comment_timestamps(url: str, max_comments: int = 50) -> List[
             "extractor_args": {"youtube": {"max_comments": [str(max_comments), "all", str(max_comments), "0"]}},
             "quiet": True,
             "no_warnings": True,
-            "socket_timeout": 4
+            "socket_timeout": 8
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -950,6 +1125,84 @@ def extract_stream_comment_timestamps(url: str, max_comments: int = 50) -> List[
     except Exception:
         pass
     return spikes
+
+def build_comment_spike_windows(
+    url: str,
+    duration: float,
+    top_k: int = 12
+) -> List[Dict[str, Any]]:
+    """
+    Extracts audience comments & chat reactions (KEKW, LMAO, W, CLIP IT, 💀, OMG)
+    and buckets timestamped viewer reactions into 15-second histogram bins,
+    returning up to top_k distinct peak dicts.
+    """
+    spikes = extract_stream_comment_timestamps(url, max_comments=150)
+    if not spikes:
+        return []
+
+    bin_size = 15.0
+    bins = {}
+    for sp in spikes:
+        sec = float(sp.get("sec", 0.0))
+        if sec < 0.0 or (duration > 0 and sec > duration + 120):
+            continue
+        b_idx = int(sec // bin_size)
+        if b_idx not in bins:
+            bins[b_idx] = {"count": 0, "weight": 0.0, "texts": [], "has_viral": False}
+        bins[b_idx]["count"] += 1
+        bins[b_idx]["weight"] += float(sp.get("weight", 1.0))
+        if sp.get("text"):
+            bins[b_idx]["texts"].append(sp["text"])
+        if sp.get("has_viral_word"):
+            bins[b_idx]["has_viral"] = True
+
+    if not bins:
+        return []
+
+    candidates = []
+    for b_idx, b_data in bins.items():
+        center = (b_idx + 0.5) * bin_size
+        weight = b_data["weight"]
+        if weight >= 1.5 or b_data["count"] >= 2 or b_data["has_viral"]:
+            w_start = max(0.0, round(center - 18.0, 1))
+            w_end = min(duration if duration > 0 else center + 50.0, round(center + 36.0, 1))
+            norm_score = min(99, max(82, int(80 + min(18, weight * 3.5))))
+            snippet = " / ".join(b_data["texts"][:2]) if b_data["texts"] else "Audience Chat Surge"
+            candidates.append({
+                "center_sec": round(center, 1),
+                "start": w_start,
+                "end": w_end,
+                "weight": weight,
+                "virality_score": norm_score,
+                "snippet": snippet[:100]
+            })
+
+    candidates.sort(key=lambda x: x["weight"], reverse=True)
+
+    peaks = []
+    seen_centers = []
+    for c in candidates:
+        center = c["center_sec"]
+        if any(abs(center - sc) < 75.0 for sc in seen_centers):
+            continue
+        seen_centers.append(center)
+        rank = len(peaks) + 1
+        peaks.append({
+            "rank": rank,
+            "center_sec": center,
+            "start": c["start"],
+            "end": c["end"],
+            "duration": round(c["end"] - c["start"], 1),
+            "virality_score": c["virality_score"],
+            "source": "chat_spike",
+            "snippet": c["snippet"],
+            "reason": f"💬 Live Audience Reaction Spike: {c['snippet']}",
+            "title": f"Rank #{rank} • 💀 AUDIENCE CHAT FREAKOUT"
+        })
+        if len(peaks) >= top_k:
+            break
+
+    return peaks
 
 def hunt_stream_viral_moments(
     url: str, 

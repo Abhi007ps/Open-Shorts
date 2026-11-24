@@ -562,6 +562,36 @@ def batch_refine_clips_with_llm(
 # Single-Pass Story Curation Engine (Story-First Architecture)
 # =====================================================================
 
+def _build_fallback_post_metadata(title: str, spoken_text: str = "", category: str = "gaming") -> Dict[str, Any]:
+    """
+    Builds clean, game-agnostic ready-to-post metadata for YouTube Shorts & Reels.
+    """
+    clean_title = re.sub(r"^Rank\s*#?\d+\s*•\s*", "", title or "Unreal Stream Moment").strip()
+    clean_title = re.sub(r"[^\w\s!?'-]", "", clean_title).strip()
+    
+    desc = f"Wait until the end... {clean_title}! Drop a like and subscribe for more daily stream highlights."
+    
+    hashtags = ["#gaming", "#livestream", "#shorts", "#funny", "#viral"]
+    lower_t = clean_title.lower()
+    if any(w in lower_t for w in ["rage", "mad", "fail", "died"]):
+        hashtags = ["#gamingrage", "#streamer", "#shorts", "#fail", "#viral"]
+    elif any(w in lower_t for w in ["clutch", "win", "aim", "insane"]):
+        hashtags = ["#clutch", "#gaming", "#shorts", "#esports", "#viral"]
+    elif any(w in lower_t for w in ["backflip", "flip", "irl"]):
+        hashtags = ["#backflip", "#streamer", "#shorts", "#irl", "#viral"]
+        
+    pinned_comment = "What would you do in this situation? 👇💬 Let me know below!"
+    if "backflip" in lower_t:
+        pinned_comment = "Did he actually land that clean or what?! Rate it 1-10 👇"
+    elif any(w in lower_t for w in ["rage", "lost", "fail"]):
+        pinned_comment = "Have you ever had a moment like this playing games? Be honest 👇💀"
+        
+    return {
+        "description": desc,
+        "hashtags": hashtags,
+        "pinned_comment": pinned_comment
+    }
+
 def curate_story_clips_from_windows(
     windows: List[Dict[str, Any]],
     video_duration: float,
@@ -576,7 +606,8 @@ def curate_story_clips_from_windows(
     or audio outbursts) with timestamped dialogue lines.
     Sends all candidate windows in ONE single /api/chat call to Qwen3:8b.
     Selects top micro-stories with complete narrative arcs (Hook -> Buildup -> Climax/Punchline),
-    determines clean boundary timestamps [start_sec, end_sec], and writes high-CTR curiosity-gap titles.
+    determines clean boundary timestamps [start_sec, end_sec], writes high-CTR curiosity-gap titles,
+    and returns ready-to-post Shorts social metadata (description, hashtags, pinned comment).
     """
     if not windows:
         return [], "No candidate windows provided."
@@ -602,6 +633,7 @@ def curate_story_clips_from_windows(
             speech_text = w.get("spoken_text") or " ".join(w.get("transcript_lines", []))
             reason = str(w.get("source", "Highlight peak"))
             v_title = synthesize_curiosity_gap_title(speech_text, reason, rank=idx)
+            post_meta = _build_fallback_post_metadata(v_title, speech_text, reason)
 
             results.append({
                 "window_id": w_id,
@@ -616,7 +648,10 @@ def curate_story_clips_from_windows(
                 "badge_color": "#EF4444" if idx <= 2 else "#F59E0B",
                 "ai_curated": True,
                 "llm_verified": False,
-                "llm_punchline": "Micro-story arc curated via Cognitive NLP standby"
+                "llm_punchline": "Micro-story arc curated via Cognitive NLP standby",
+                "description": post_meta["description"],
+                "hashtags": post_meta["hashtags"],
+                "pinned_comment": post_meta["pinned_comment"]
             })
         return results, "Curated by Cognitive NLP Standby Engine"
 
@@ -671,6 +706,10 @@ For each chosen clip:
 2. Clip duration MUST be between {int(min_duration)}s and {int(max_duration)}s.
 3. Write an ALL-CAPS curiosity-gap "viral_title" that references SPECIFIC dialogue words or actions (NOT generic like "INSANE MOMENT"). Add 1-2 emojis (💀 😭 🔥 🤯 😱 🚔 🏎️).
 4. Provide a brief 1-sentence "punchline_summary".
+5. Provide ready-to-post social metadata:
+   - "description": 1-2 punchy sentences teasing the clip for YouTube Shorts / Reels.
+   - "hashtags": array of 5 relevant lowercase hashtags (e.g. ["#gaming", "#livestream", "#shorts", "#funny", "#viral"]).
+   - "pinned_comment": 1 short engaging question to spark viewer comments.
 
 Respond ONLY in valid JSON matching this schema:
 {{
@@ -681,6 +720,9 @@ Respond ONLY in valid JSON matching this schema:
       "end_sec": 156.0,
       "viral_title": "HE GAVE $20,000 TO A HOMELESS NPC 😭❤️",
       "punchline_summary": "Streamer gives all his cash to an NPC who roasts him back.",
+      "description": "Wait until you see how this NPC responds... You won't believe what happened! Drop a like and subscribe for daily clips.",
+      "hashtags": ["#gaming", "#gta", "#shorts", "#funny", "#viral"],
+      "pinned_comment": "Would you have given him the money or kept walking? Drop your answer below! 👇",
       "hook_score": 94,
       "virality_score": 96
     }}
@@ -748,13 +790,31 @@ Respond ONLY in valid JSON matching this schema:
 
             rank_idx = len(selected_clips) + 1
             v_title = str(item.get("viral_title", "")).strip()
+            speech_text = w_orig.get("spoken_text") or " ".join(w_orig.get("transcript_lines", []))
             if not v_title or len(v_title) < 5 or any(g in v_title.lower() for g in ["insane reaction", "crazy moment"]):
-                speech_text = w_orig.get("spoken_text") or " ".join(w_orig.get("transcript_lines", []))
                 v_title = synthesize_curiosity_gap_title(speech_text, str(w_orig.get("source", "peak")), rank=rank_idx)
             v_title = re.sub(r"^Rank\s*#?\d+\s*•\s*", "", v_title)
 
             base_virality = int(item.get("virality_score") or w_orig.get("peak_score", 88))
             virality = min(99, max(75, base_virality + 3))
+
+            desc = str(item.get("description", "")).strip()
+            ht = item.get("hashtags")
+            pc = str(item.get("pinned_comment", "")).strip()
+            if not desc or not ht or not pc:
+                fb_meta = _build_fallback_post_metadata(v_title, speech_text, str(w_orig.get("source", "peak")))
+                if not desc:
+                    desc = fb_meta["description"]
+                if not ht or not isinstance(ht, list):
+                    ht = fb_meta["hashtags"]
+                if not pc:
+                    pc = fb_meta["pinned_comment"]
+
+            if isinstance(ht, list):
+                ht = [str(tag).strip() for tag in ht if str(tag).strip()]
+                ht = [f"#{tag.lstrip('#').lower()}" for tag in ht][:6]
+            else:
+                ht = ["#gaming", "#livestream", "#shorts", "#funny", "#viral"]
 
             selected_clips.append({
                 "window_id": wid,
@@ -770,6 +830,9 @@ Respond ONLY in valid JSON matching this schema:
                 "ai_curated": True,
                 "llm_verified": True,
                 "llm_punchline": item.get("punchline_summary") or editorial_reason,
+                "description": desc,
+                "hashtags": ht,
+                "pinned_comment": pc,
                 "metrics": {
                     "hook_quality": int(item.get("hook_score", 90)),
                     "voice_energy": int(w_orig.get("peak_score", 85)),
@@ -788,6 +851,143 @@ Respond ONLY in valid JSON matching this schema:
         print(f"[LLM Engine] Failed parsing story curation JSON: {parse_err}")
 
     return _cognitive_fallback()
+
+def curate_tournament_top_clips(
+    windows: List[Dict[str, Any]],
+    video_duration: float,
+    target_count: int = 8,
+    min_duration: float = 15.0,
+    max_duration: float = 50.0,
+    model: Optional[str] = None,
+    progress_callback: Optional[Callable[[str, int], None]] = None
+) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    2-ROUND CHAMPIONSHIP TOURNAMENT CURATION ENGINE:
+    Ensures that for 6h-20h streams with up to 24 candidate moments, Ollama / Qwen3:8b
+    stays razor-sharp in small context windows (8 windows per batch), advancing top finalists
+    to a Championship Finals round where moments are pitted head-to-head.
+    Guarantees the absolute top 6-8 micro-stories across the full stream.
+    """
+    if not windows:
+        return [], "No candidate windows provided."
+
+    # Direct delegation if 10 or fewer windows
+    if len(windows) <= 10:
+        if progress_callback:
+            progress_callback("Curating stream micro-stories via Qwen3 Story Mind...", 55)
+        return curate_story_clips_from_windows(
+            windows=windows,
+            video_duration=video_duration,
+            target_count=target_count,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            model=model
+        )
+
+    eval_pool = windows[:24]
+    batch_size = 8
+    batches = [eval_pool[i:i + batch_size] for i in range(0, len(eval_pool), batch_size)]
+    round1_finalists = []
+
+    print(f"[LLM Engine] Tournament Round 1: Processing {len(eval_pool)} candidates in {len(batches)} qualifier pools...")
+
+    for b_idx, batch in enumerate(batches):
+        if progress_callback:
+            pct = 40 + int((b_idx + 1) * 20 / len(batches))
+            progress_callback(f"Tournament Round 1: Evaluating Qualifier Group {b_idx + 1}/{len(batches)}...", pct)
+
+        b_clips, b_reason = curate_story_clips_from_windows(
+            windows=batch,
+            video_duration=video_duration,
+            target_count=4,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            model=model
+        )
+        for clip in b_clips:
+            w_id = clip.get("window_id")
+            w_orig = next((w for w in batch if w.get("window_id") == w_id), None)
+            clip["_orig_window"] = w_orig
+            round1_finalists.append(clip)
+
+    if not round1_finalists:
+        return curate_story_clips_from_windows(
+            windows=eval_pool[:10],
+            video_duration=video_duration,
+            target_count=target_count,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            model=model
+        )
+
+    print(f"[LLM Engine] Tournament Round 1 complete. {len(round1_finalists)} finalists advanced to Championship Finals.")
+
+    if len(round1_finalists) <= target_count:
+        round1_finalists.sort(key=lambda x: int(x.get("virality_score", 0)), reverse=True)
+        for r_idx, c in enumerate(round1_finalists, 1):
+            c["rank"] = r_idx
+            base_t = re.sub(r"^Rank\s*#?\d+\s*•\s*", "", c.get("title", ""))
+            c["title"] = f"Rank #{r_idx} • {base_t}"
+            c["badge_color"] = "#EF4444" if r_idx <= 2 else "#F59E0B"
+            c.pop("_orig_window", None)
+        return round1_finalists, "Tournament Finalists Curated across Full Stream"
+
+    # Round 2: Championship Finals
+    if progress_callback:
+        progress_callback("Tournament Finals: Pitting Round 1 winners head-to-head for stream crown...", 72)
+
+    championship_windows = []
+    for f_idx, f_clip in enumerate(round1_finalists, 1):
+        w_orig = f_clip.get("_orig_window") or {}
+        c_start = float(f_clip.get("start", 0.0))
+        c_end = float(f_clip.get("end", c_start + 30.0))
+        climax_t = float(f_clip.get("climax_t", (c_start + c_end) / 2))
+
+        championship_windows.append({
+            "window_id": f_idx,
+            "source": w_orig.get("source", "Tournament Finalist"),
+            "peak_score": int(f_clip.get("virality_score", 90)),
+            "center_sec": climax_t,
+            "start_bound": max(0.0, c_start - 10.0),
+            "end_bound": min(video_duration, c_end + 10.0),
+            "transcript_lines": w_orig.get("transcript_lines", []),
+            "spoken_text": w_orig.get("spoken_text", f_clip.get("title", "")),
+            "orig_cand": w_orig.get("orig_cand", f_clip)
+        })
+
+    championship_clips, champ_reason = curate_story_clips_from_windows(
+        windows=championship_windows,
+        video_duration=video_duration,
+        target_count=target_count,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        model=model
+    )
+
+    if not championship_clips:
+        round1_finalists.sort(key=lambda x: int(x.get("virality_score", 0)), reverse=True)
+        championship_clips = round1_finalists[:target_count]
+
+    championship_clips.sort(key=lambda x: int(x.get("virality_score", 0)), reverse=True)
+    final_ranked = []
+    seen_times = []
+    for r_idx, c in enumerate(championship_clips, 1):
+        c_st = float(c.get("start", 0.0))
+        if any(abs(c_st - st) < 30.0 for st in seen_times):
+            continue
+        seen_times.append(c_st)
+        rank_n = len(final_ranked) + 1
+        c["rank"] = rank_n
+        base_t = re.sub(r"^Rank\s*#?\d+\s*•\s*", "", c.get("title", ""))
+        c["title"] = f"Rank #{rank_n} • {base_t}"
+        c["badge_color"] = "#EF4444" if rank_n <= 2 else "#F59E0B"
+        c.pop("_orig_window", None)
+        final_ranked.append(c)
+        if len(final_ranked) >= target_count:
+            break
+
+    print(f"[LLM Engine] Tournament Championship finished: Crowned top {len(final_ranked)} viral moments.")
+    return final_ranked, champ_reason or "Tournament Championship Winners Crowned"
 
 def curate_auto_viral_clips(
     candidates: List[Dict[str, Any]],

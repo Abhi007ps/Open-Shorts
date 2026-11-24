@@ -2346,6 +2346,17 @@ function renderClips() {
             <i class="fa-solid fa-brain" style="color: #34d399;"></i>
             <span><strong>LLM Unified Mind:</strong> ${c.llm_punchline}</span>
           </div>` : ''}
+          ${(c.description || (c.hashtags && c.hashtags.length) || c.pinned_comment) ? `
+          <div class="post-kit-strip">
+            <span class="post-kit-label"><i class="fa-solid fa-share-nodes"></i> Post Kit:</span>
+            <button type="button" class="post-kit-btn" onclick="window.copyClipCaption('${c.id}', event)" title="Copy Title + Description + Hashtags for YouTube Shorts / Reels">
+              <i class="fa-solid fa-copy"></i> Copy Caption
+            </button>
+            ${c.pinned_comment ? `
+            <button type="button" class="post-kit-btn" onclick="window.copyClipComment('${c.id}', event)" title="Copy Pinned Engagement Comment">
+              <i class="fa-solid fa-comment-dots"></i> Copy Comment
+            </button>` : ''}
+          </div>` : ''}
         </div>
       </div>
       <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px;">
@@ -2360,6 +2371,49 @@ function renderClips() {
     container.appendChild(item);
   });
 }
+
+window.copyClipCaption = function(id, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  const clip = state.clips.find(c => c.id === id);
+  if (!clip) return;
+  const cleanTitle = (clip.title || "").replace(/^Rank\s*#?\d+\s*•\s*/, "").trim();
+  const desc = clip.description || "";
+  const tags = Array.isArray(clip.hashtags) ? clip.hashtags.join(" ") : (clip.hashtags || "");
+  const textToCopy = `${cleanTitle}\n\n${desc}\n\n${tags}`.trim();
+  
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      showToast("📋 Copied Shorts caption & hashtags!");
+    }).catch(() => {
+      showToast("📋 Copied Shorts caption & hashtags!");
+    });
+  } else {
+    showToast("📋 Copied Shorts caption & hashtags!");
+  }
+};
+
+window.copyClipComment = function(id, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  const clip = state.clips.find(c => c.id === id);
+  if (!clip || !clip.pinned_comment) return;
+  const commentText = clip.pinned_comment.trim();
+  
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(commentText).then(() => {
+      showToast("💬 Copied pinned engagement comment!");
+    }).catch(() => {
+      showToast("💬 Copied pinned engagement comment!");
+    });
+  } else {
+    showToast("💬 Copied pinned engagement comment!");
+  }
+};
 
 window.toggleClipSubtitles = function(id, event) {
   if (event) {

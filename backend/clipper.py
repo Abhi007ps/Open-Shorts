@@ -310,7 +310,7 @@ def generate_preview_frame(
         input_video_w=in_w,
         input_video_h=in_h,
         performance_tier=perf_prof.get("filter_mode"),
-        encoder_name=get_best_encoder()
+        encoder_name=None
     )
     
     cmd = [

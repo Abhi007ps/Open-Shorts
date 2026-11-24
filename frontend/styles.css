@@ -1542,3 +1542,52 @@ input[type="checkbox"]:checked::after {
     height: 520px;
   }
 }
+
+/* ==========================================================================
+   POST KIT ACTION STRIP (Clip Card Social Publishing)
+   ========================================================================== */
+.post-kit-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  flex-wrap: wrap;
+}
+
+.post-kit-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--accent-neon);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.post-kit-btn {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.post-kit-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--accent-neon);
+  color: #FFFFFF;
+  transform: translateY(-1px);
+}
+
