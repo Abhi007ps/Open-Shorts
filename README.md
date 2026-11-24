@@ -36,7 +36,7 @@
 - **Dynamic Tiering**: Selects an optimal performance profile:
   - `ultra`: 16GB+ RAM & 8GB+ VRAM (NVENC/QSV, multi-worker batch exports)
   - `performance`: 16GB RAM & 4GB+ VRAM
-  - `balanced`: 8GB–16GB RAM (2 concurrent workers, balanced filters)
+  - `balanced`: 8GB–16GB RAM or iGPU (1 worker, fast filters)
   - `eco`: <8GB RAM or low VRAM (memory-conserving sequential rendering)
 - **Universal Hardware Encoding**: Supports NVIDIA (`h264_nvenc`), Intel QuickSync (`h264_qsv`), AMD (`h264_amf`), Apple Silicon (`h264_videotoolbox`), Linux (`h264_vaapi`), with safe fallback to multi-threaded CPU `libx264`.
 - **Mask Caching**: Caches Pillow-generated corner masks and border PNGs in `assets/cache/` to eliminate duplicate image rendering during video composition.

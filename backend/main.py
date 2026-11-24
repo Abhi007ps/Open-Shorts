@@ -671,15 +671,8 @@ def api_scan_stream_audio(req: ProbeStreamReq):
         transcript_segs = fetch_stream_transcript(cached_info)
         heatmap_peaks = extract_heatmap_peaks(cached_info, duration=dur, top_k=10)
 
-        if transcript_segs and (heatmap_peaks or meta.get("chapters")):
-            CURRENT_STATE["stream_progress"] = {
-                "status": "processing",
-                "percent": 45,
-                "step": f"Found native captions ({len(transcript_segs)} segments) & audience heatmap! Running Story Curation with Qwen3..."
-            }
-
-            windows = []
-            peak_sources = heatmap_peaks if heatmap_peaks else []
+        if transcript_segs:
+            peak_sources = list(heatmap_peaks) if heatmap_peaks else []
             if not peak_sources and meta.get("chapters"):
                 for ch_idx, ch in enumerate(meta["chapters"][:8], 1):
                     ch_c = (ch["start"] + ch["end"]) / 2
@@ -692,60 +685,104 @@ def api_scan_stream_audio(req: ProbeStreamReq):
                         "source": "chapter"
                     })
 
-            for w_idx, p in enumerate(peak_sources[:12], 1):
-                p_center = float(p.get("center_sec", 0.0))
-                w_start = max(0.0, p_center - 35.0)
-                w_end = min(dur, p_center + 40.0)
+            # If still no peaks (no heatmap & no chapters, common on fresh VODs):
+            # Build up to 10 evenly spaced ~75s transcript windows covering the stream,
+            # prioritizing windows with the highest word density
+            if not peak_sources:
+                stream_dur = max(dur, float(transcript_segs[-1].get("end", 0.0)))
+                if stream_dur > 30.0:
+                    window_span = 75.0
+                    stride = max(45.0, (stream_dur - window_span) / 16.0) if stream_dur > window_span else 30.0
+                    dense_candidates = []
+                    curr_center = min(stream_dur / 2.0, window_span / 2.0)
+                    while curr_center < (stream_dur - 15.0):
+                        w_s = max(0.0, curr_center - 37.5)
+                        w_e = min(stream_dur, curr_center + 37.5)
+                        w_words = sum(
+                            len(s.get("text", "").split())
+                            for s in transcript_segs
+                            if float(s.get("end", 0)) >= w_s and float(s.get("start", 0)) <= w_e
+                        )
+                        if w_words >= 8:
+                            dense_candidates.append({
+                                "center_sec": round(curr_center, 1),
+                                "start": w_s,
+                                "end": w_e,
+                                "word_count": w_words,
+                                "virality_score": 85,
+                                "source": "transcript_density"
+                            })
+                        curr_center += stride
 
-                matching = [
-                    s for s in transcript_segs
-                    if float(s.get("end", 0)) >= w_start and float(s.get("start", 0)) <= w_end
-                ]
-                t_lines = [f"[{float(s.get('start', 0)):.1f}s] {s.get('text', '').strip()}" for s in matching if s.get("text")]
-                spoken_text = " ".join(s.get("text", "").strip() for s in matching)
+                    dense_candidates.sort(key=lambda x: x["word_count"], reverse=True)
+                    selected_dense = dense_candidates[:10]
+                    selected_dense.sort(key=lambda x: x["center_sec"])
+                    for r_idx, cand in enumerate(selected_dense, 1):
+                        cand["rank"] = r_idx
+                        peak_sources.append(cand)
 
-                windows.append({
-                    "window_id": w_idx,
-                    "source": p.get("source", "heatmap"),
-                    "peak_score": int(p.get("virality_score", 90)),
-                    "center_sec": p_center,
-                    "start_bound": w_start,
-                    "end_bound": w_end,
-                    "transcript_lines": t_lines,
-                    "spoken_text": spoken_text
-                })
-
-            CURRENT_STATE["stream_progress"] = {
-                "status": "processing",
-                "percent": 75,
-                "step": "Single-pass story arc evaluation with Qwen3..."
-            }
-
-            curated_clips, curation_reason = curate_story_clips_from_windows(
-                windows=windows,
-                video_duration=dur,
-                target_count=8,
-                min_duration=15.0,
-                max_duration=48.0
-            )
-
-            if curated_clips:
-                CURRENT_STATE["peak_transcriptions"] = {
-                    str(round(c.get("start", 0), 1)): c.get("title", "")
-                    for c in curated_clips
-                }
+            if peak_sources:
                 CURRENT_STATE["stream_progress"] = {
-                    "status": "completed",
-                    "percent": 100,
-                    "step": f"Curated {len(curated_clips)} viral stories with Qwen3 in seconds (Zero Download)!"
+                    "status": "processing",
+                    "percent": 45,
+                    "step": f"Found native captions ({len(transcript_segs)} segments)! Running Story Curation with Qwen3..."
                 }
-                return {
-                    "status": "success",
-                    "meta": meta,
-                    "viral_candidates": curated_clips,
-                    "audio_size_mb": 0,
-                    "mode": "story_first_zero_download"
+
+                windows = []
+                for w_idx, p in enumerate(peak_sources[:12], 1):
+                    p_center = float(p.get("center_sec", 0.0))
+                    w_start = max(0.0, p_center - 35.0)
+                    w_end = min(dur, p_center + 40.0)
+
+                    matching = [
+                        s for s in transcript_segs
+                        if float(s.get("end", 0)) >= w_start and float(s.get("start", 0)) <= w_end
+                    ]
+                    t_lines = [f"[{float(s.get('start', 0)):.1f}s] {s.get('text', '').strip()}" for s in matching if s.get("text")]
+                    spoken_text = " ".join(s.get("text", "").strip() for s in matching)
+
+                    windows.append({
+                        "window_id": w_idx,
+                        "source": p.get("source", "heatmap"),
+                        "peak_score": int(p.get("virality_score", 90)),
+                        "center_sec": p_center,
+                        "start_bound": w_start,
+                        "end_bound": w_end,
+                        "transcript_lines": t_lines,
+                        "spoken_text": spoken_text
+                    })
+
+                CURRENT_STATE["stream_progress"] = {
+                    "status": "processing",
+                    "percent": 75,
+                    "step": "Single-pass story arc evaluation with Qwen3..."
                 }
+
+                curated_clips, curation_reason = curate_story_clips_from_windows(
+                    windows=windows,
+                    video_duration=dur,
+                    target_count=8,
+                    min_duration=15.0,
+                    max_duration=48.0
+                )
+
+                if curated_clips:
+                    CURRENT_STATE["peak_transcriptions"] = {
+                        str(round(c.get("start", 0), 1)): c.get("title", "")
+                        for c in curated_clips
+                    }
+                    CURRENT_STATE["stream_progress"] = {
+                        "status": "completed",
+                        "percent": 100,
+                        "step": f"Curated {len(curated_clips)} viral stories with Qwen3 in seconds (Zero Download)!"
+                    }
+                    return {
+                        "status": "success",
+                        "meta": meta,
+                        "viral_candidates": curated_clips,
+                        "audio_size_mb": 0,
+                        "mode": "story_first_zero_download"
+                    }
 
         # FALLBACK PATH: Download lightweight compressed audio for Kick/Twitch/no-caption VODs
         CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 20, "step": "Pulling audio channel for acoustic analysis..."}
@@ -753,41 +790,49 @@ def api_scan_stream_audio(req: ProbeStreamReq):
             CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": pct, "step": msg}
 
         audio_res = download_stream_audio(req.url, output_dir=TEMP_DIR, progress_callback=cb)
+        audio_file_path = audio_res.get("audio_path")
 
-        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 70, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
-        peaks = scan_audio_energy_peaks(audio_res["audio_path"], duration=dur)
+        try:
+            CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 70, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
+            peaks = scan_audio_energy_peaks(audio_file_path, duration=dur)
 
-        if peaks:
-            n_peaks = len(peaks)
-            CURRENT_STATE["stream_progress"] = {
-                "status": "processing",
-                "percent": 82,
-                "step": f"Transcribing {n_peaks} peak moments with Whisper for real context..."
+            if peaks:
+                n_peaks = len(peaks)
+                CURRENT_STATE["stream_progress"] = {
+                    "status": "processing",
+                    "percent": 82,
+                    "step": f"Transcribing {n_peaks} peak moments with Whisper for real context..."
+                }
+                try:
+                    peaks = transcribe_audio_peaks(audio_file_path, peaks, progress_callback=cb)
+                except Exception as trans_err:
+                    print(f"[WARN] Peak transcription failed, using energy-only titles: {trans_err}")
+
+            CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 95, "step": "Combining chat signals & chapter markers..."}
+            moments = hunt_stream_viral_moments(req.url, dur, meta=meta, audio_peaks=peaks)
+            if not isinstance(moments, list):
+                moments = []
+
+            # Store peak transcriptions in state so slice loading can reuse them
+            CURRENT_STATE["peak_transcriptions"] = {
+                str(round(p.get("start", 0), 1)): p.get("spoken_text", "")
+                for p in peaks if p.get("has_transcript")
             }
-            try:
-                peaks = transcribe_audio_peaks(audio_res["audio_path"], peaks, progress_callback=cb)
-            except Exception as trans_err:
-                print(f"[WARN] Peak transcription failed, using energy-only titles: {trans_err}")
 
-        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 95, "step": "Combining chat signals & chapter markers..."}
-        moments = hunt_stream_viral_moments(req.url, dur, meta=meta, audio_peaks=peaks)
-        if not isinstance(moments, list):
-            moments = []
-
-        # Store peak transcriptions in state so slice loading can reuse them
-        CURRENT_STATE["peak_transcriptions"] = {
-            str(round(p.get("start", 0), 1)): p.get("spoken_text", "")
-            for p in peaks if p.get("has_transcript")
-        }
-
-        CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": f"Found {len(moments)} viral moments with real dialogue context!"}
-        return {
-            "status": "success",
-            "meta": meta,
-            "viral_candidates": moments,
-            "audio_size_mb": audio_res.get("size_mb", 0),
-            "mode": "audio_first_synergy"
-        }
+            CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": f"Found {len(moments)} viral moments with real dialogue context!"}
+            return {
+                "status": "success",
+                "meta": meta,
+                "viral_candidates": moments,
+                "audio_size_mb": audio_res.get("size_mb", 0),
+                "mode": "audio_first_synergy"
+            }
+        finally:
+            if audio_file_path and os.path.exists(audio_file_path):
+                try:
+                    os.remove(audio_file_path)
+                except Exception as clean_err:
+                    print(f"[WARN] Failed to delete temp scan audio: {clean_err}")
     except Exception as e:
         import traceback
         traceback.print_exc()

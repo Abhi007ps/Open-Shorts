@@ -4,7 +4,8 @@ import sys
 import json
 import time
 import subprocess
-from typing import Dict, Any, List, Optional, Callable
+import urllib.request
+from typing import Dict, Any, List, Optional, Callable, Tuple
 
 # Ensure bin directory (with deno.exe, ffmpeg.exe, whisper-cli.exe) is first on PATH for yt-dlp runtime
 _BIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin"))

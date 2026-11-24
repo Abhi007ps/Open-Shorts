@@ -49,6 +49,10 @@ storage/temp/*
 storage/thumbnails/*
 !storage/thumbnails/.gitkeep
 
+storage/templates/*
+!storage/templates/.gitkeep
+storage/templates/master_template.json
+
 # Session state & temporary runtime logs
 storage/temp/session_state.json
 *.log

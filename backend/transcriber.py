@@ -4,8 +4,6 @@ import json
 import re
 import hashlib
 import wave
-import struct
-import math
 from typing import List, Dict, Any, Optional
 from backend.hardware import FFMPEG_BIN, WHISPER_CLI, get_cpu_info
 
@@ -118,13 +116,13 @@ def extract_audio_wav(
     audio_track: int = 0
 ) -> str:
     """
-    Extracts 16kHz mono WAV required by whisper.cpp.
-    When streamer_voice_focus is enabled, applies an acoustic isolation filter pipeline:
-    - Highpass & lowpass bandpass for human vocal range (120Hz - 3600Hz)
-    - Dynamic noise gate (-34dB) to attenuate quiet background NPC chatter & game ambiance
-    - Adaptive FFT noise reduction to suppress game music/hum
-    - Center speech channel summing and speech normalization
-    Includes boundary clamping against actual video duration and empty-audio protection.
+    Extracts 16kHz mono 16-bit PCM WAV required by whisper.cpp.
+    When streamer_voice_focus is enabled, applies a clean Whisper-friendly vocal normalization pipeline:
+    - Accurate timestamp reset (asetpts=PTS-STARTPTS)
+    - Downmix to mono (pan=mono|c0=0.5*c0+0.5*c1)
+    - Wide vocal bandpass (highpass=f=80, lowpass=f=7800) preserving natural speech harmonics
+    - Dynamic audio normalization (dynaudnorm=f=150:g=15:p=0.90:m=5.0) for consistent vocal clarity
+    Includes boundary clamping against actual video duration and fallback to silent WAV on error.
     """
     # 0. Probe video duration to avoid seeking past EOF
     v_dur = get_media_duration(video_path)
@@ -391,184 +389,6 @@ def parse_tokens_to_words(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, 
         clamped_words.append(w_item)
 
     return clamped_words
-
-def align_words_to_acoustic_energy(
-    words: List[Dict[str, Any]], 
-    wav_path: str
-) -> List[Dict[str, Any]]:
-    """
-    Automatic Acoustic Vocal Energy Alignment & Silence Gating.
-    1. Rejects Whisper hallucinations that fall into true audio silence or floor noise.
-    2. Collapses repetitive words emitted during low-energy stream pauses.
-    3. Snaps word start boundaries to the steep acoustic vocal attack edge in the 16kHz audio.
-    4. Snaps word end boundaries to vocal release before pauses, eliminating temporal drift.
-    5. Strips all full stops (.) and commas (,) from all words.
-    """
-    if not words or not os.path.exists(wav_path):
-        return words
-
-    try:
-        with wave.open(wav_path, "rb") as wf:
-            framerate = wf.getframerate()
-            n_frames = wf.getnframes()
-            sampwidth = wf.getsampwidth()
-            raw = wf.readframes(n_frames)
-
-        if framerate <= 0 or sampwidth != 2:
-            return words
-
-        total_samples = len(raw) // 2
-        samples = struct.unpack(f"<{total_samples}h", raw)
-
-        # CapCut Grade: 5ms ultra-high temporal resolution (80 samples at 16kHz = 200 fps)
-        frame_len = int(framerate * 0.005)
-        if frame_len <= 0:
-            return words
-
-        # Calculate RMS energy for every 5ms frame
-        energies = []
-        for i in range(0, total_samples, frame_len):
-            chunk = samples[i:i + frame_len]
-            if chunk:
-                rms = math.sqrt(sum(s * s for s in chunk) / len(chunk))
-                energies.append(rms)
-
-        n_energies = len(energies)
-        if n_energies < 20:
-            return words
-
-        # Calculate energy derivative (vocal attack velocity dE/dt)
-        gradients = [0.0]
-        for i in range(1, n_energies):
-            gradients.append(energies[i] - energies[i - 1])
-
-        # Global audio baseline stats
-        sorted_e = sorted(energies)
-        global_floor = sorted_e[int(n_energies * 0.15)]
-        global_peak = sorted_e[int(n_energies * 0.95)]
-        dynamic_range = max(1.0, global_peak - global_floor)
-        silence_threshold = global_floor + (dynamic_range * 0.12)
-
-        aligned = []
-        prev_word_text = ""
-        prev_word_end = 0.0
-        consecutive_repeat_count = 0
-
-        for idx, w in enumerate(words):
-            raw_w = re.sub(r'[,.]+', '', str(w.get("word", ""))).strip()
-            if not raw_w:
-                continue
-
-            w_item = dict(w)
-            w_item["word"] = raw_w
-            nominal_start = float(w.get("start", 0))
-            nominal_end = float(w.get("end", nominal_start + 0.1))
-
-            f_start = max(0, min(n_energies - 1, int(nominal_start * 200)))
-            f_end = max(0, min(n_energies - 1, int(nominal_end * 200)))
-
-            # 1. Acoustic Silence Hallucination Filter
-            if f_end >= f_start:
-                word_energies = energies[f_start:f_end + 1]
-                mean_energy = sum(word_energies) / max(1, len(word_energies))
-                peak_energy = max(word_energies)
-            else:
-                mean_energy = energies[f_start]
-                peak_energy = energies[f_start]
-
-            if peak_energy < silence_threshold and mean_energy < silence_threshold:
-                continue
-
-            # 2. Suppress repetitive word hallucinations during quiet pauses
-            norm_w = raw_w.lower()
-            if norm_w == prev_word_text and (nominal_start - prev_word_end) < 0.35:
-                consecutive_repeat_count += 1
-                if consecutive_repeat_count >= 2 or mean_energy < (global_floor + dynamic_range * 0.10):
-                    continue
-            else:
-                consecutive_repeat_count = 0
-
-            # 3. 5ms Sub-Frame Acoustic Attack Snapping with Speech Onset Lead Compensation
-            # Whisper token attention naturally lags audio attack by 120-180ms.
-            # Look back up to 36 frames (-180ms) to snap to the true consonant onset.
-            win_s = max(1, f_start - 36)
-            win_e = min(n_energies - 1, f_start + 16)
-
-            best_f = f_start
-            max_attack_score = -1e9
-            for f_idx in range(win_s, win_e + 1):
-                e_val = energies[f_idx]
-                grad_val = gradients[f_idx]
-                if e_val >= silence_threshold * 0.85:
-                    attack_score = grad_val * 0.80 + (e_val - silence_threshold) * 0.20
-                    if attack_score > max_attack_score:
-                        max_attack_score = attack_score
-                        best_f = f_idx
-
-            if max_attack_score > 0:
-                # Apply professional speech-onset lead (0.04s lead) so text hits screen right as lips move
-                onset_sec = max(0.0, best_f * 0.005 - 0.04)
-                w_item["start"] = round(onset_sec, 3)
-            else:
-                w_item["start"] = round(max(0.0, nominal_start - 0.08), 3)
-
-            # 4. 5ms Vocal Offset Snapping (Snap word end before long pauses)
-            is_followed_by_pause = False
-            if idx + 1 < len(words):
-                next_start = float(words[idx + 1].get("start", nominal_end))
-                if (next_start - nominal_end) > 0.08:
-                    is_followed_by_pause = True
-            else:
-                is_followed_by_pause = True
-
-            if is_followed_by_pause:
-                win_es = max(0, f_end - 20)
-                win_ee = min(n_energies - 1, f_end + 20)
-                if win_ee > win_es:
-                    local_end_win = energies[win_es:win_ee + 1]
-                    local_floor = min(local_end_win)
-                    end_thresh = local_floor + 0.18 * (max(local_end_win) - local_floor)
-
-                    best_end_f = f_end
-                    for f_idx in range(win_es, win_ee + 1):
-                        if energies[f_idx] <= end_thresh:
-                            best_end_f = f_idx
-                            break
-                    w_item["end"] = round(max(w_item["start"] + 0.06, best_end_f * 0.005), 3)
-            else:
-                w_item["end"] = round(max(w_item["start"] + 0.06, nominal_end - 0.04), 3)
-
-            aligned.append(w_item)
-            prev_word_text = norm_w
-            prev_word_end = w_item["end"]
-
-        # Final monotonic sequential safety pass (zero lag accumulation in rapid speech)
-        resolved_aligned = []
-        last_word_end = 0.0
-        for w_item in aligned:
-            s = float(w_item["start"])
-            e = float(w_item["end"])
-            txt = w_item.get("word", "")
-            nat_min = max(0.08, min(0.25, len(txt) * 0.04))
-            
-            # Prevent backward jumps without artificially pushing words into delayed drift
-            if s < last_word_end - 0.04:
-                s = round(last_word_end, 3)
-            if e <= s:
-                e = round(s + nat_min, 3)
-            elif (e - s) < nat_min:
-                e = round(s + nat_min, 3)
-                
-            w_item["start"] = s
-            w_item["end"] = e
-            last_word_end = e
-            resolved_aligned.append(w_item)
-
-        return resolved_aligned
-
-    except Exception as e:
-        print(f"Notice: Acoustic energy alignment fallback: {e}")
-        return words
 
 def sanitize_word_timings(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """

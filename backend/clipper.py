@@ -583,18 +583,21 @@ def render_clip(
         default_bitrate = perf_prof.get("default_1080p_bitrate", "12M")
 
     export_bitrate = template_config.get("export_bitrate") or subtitle_config.get("export_bitrate") or default_bitrate
-    enc_args = get_encoder_args(active_encoder, bitrate=export_bitrate)
 
     cpu_info = get_cpu_info()
     total_threads = int(cpu_info.get("ffmpeg_threads", 4))
     eff_threads = max(2, total_threads // max(1, workers_count))
     cpu_threads = str(eff_threads)
 
+    enc_args = get_encoder_args(active_encoder, threads=eff_threads, bitrate=export_bitrate)
+
     base_cmd = [
         FFMPEG_BIN, "-y",
         "-filter_complex_threads", cpu_threads,
         "-threads", cpu_threads
     ]
+    if active_encoder == "h264_vaapi":
+        base_cmd.extend(["-vaapi_device", "/dev/dri/renderD128"])
     # Note: Hardware decoding (-hwaccel auto) is intentionally omitted here because multi-branch software filtergraphs
     # (splitting [0:v] into background, gameplay, and webcam simultaneously) cause D3D11VA/DXVA2 surface pitch corruption
     # (green split screen on the right half). Multi-threaded CPU decoding feeds pristine YUV frames into the filtergraph,
@@ -695,13 +698,21 @@ def render_clip(
         # Hardware acceleration fallback safety: if GPU encoder fails, immediately retry with ultrafast CPU
         if active_encoder != "libx264":
             print(f"Hardware encoder '{active_encoder}' failed ({e.stderr.decode('utf-8', errors='ignore')[:120] if hasattr(e, 'stderr') and e.stderr else ''}). Falling back to multi-core CPU libx264...")
-            fallback_cmd = list(base_cmd)
+            fb_base = list(base_cmd)
+            fb_fg = filtergraph
+            if active_encoder == "h264_vaapi":
+                # Omit -vaapi_device and strip VA-API hwupload stage for CPU encoding
+                fb_base = [arg for arg in fb_base if arg not in ("-vaapi_device", "/dev/dri/renderD128")]
+                fb_fg = re.sub(r';\s*\[pre_vaapi\]format=nv12,hwupload\[out_v\]', '', fb_fg)
+                fb_fg = fb_fg.replace("[pre_vaapi]", "[out_v]")
+
+            fallback_cmd = list(fb_base)
             fallback_cmd.extend([
-                "-filter_complex", filtergraph,
+                "-filter_complex", fb_fg,
                 "-map", "[out_v]",
                 "-map", "0:a?"
             ])
-            fallback_cmd.extend(get_encoder_args("libx264", bitrate=export_bitrate))
+            fallback_cmd.extend(get_encoder_args("libx264", threads=eff_threads, bitrate=export_bitrate))
             fallback_cmd.extend([
                 "-c:a", "aac",
                 "-b:a", "128k",

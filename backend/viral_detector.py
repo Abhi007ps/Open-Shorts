@@ -88,6 +88,10 @@ def extract_audio_features(video_path: str, sample_rate: int = 8000, window_sec:
                 chunk = proc.stdout.read(bytes_per_window)
                 if not chunk or len(chunk) < 4:
                     break
+                even_len = (len(chunk) // 2) * 2
+                if even_len < 4:
+                    break
+                chunk = chunk[:even_len]
                 samples = array.array('h')
                 samples.frombytes(chunk)
                 num_s = len(samples)
@@ -1189,6 +1193,8 @@ def detect_viral_moments(
                     subtitles=usable_subs,
                     video_duration=video_duration,
                     target_count=auto_target_count,
+                    min_duration=min_dur,
+                    max_duration=max_dur,
                     model=llm_model
                 )
                 if approved_clips:
@@ -1202,6 +1208,8 @@ def detect_viral_moments(
                     subtitles=usable_subs,
                     video_duration=video_duration,
                     target_count=eval_limit,
+                    min_duration=min_dur,
+                    max_duration=max_dur,
                     model=llm_model
                 )
                 if approved_clips:
@@ -1278,9 +1286,11 @@ def detect_viral_moments(
     os.makedirs(thumb_dir, exist_ok=True)
 
     for idx, c in enumerate(final_list):
-        score = c["virality_score"]
+        score = c.get("virality_score", 85)
         rank_num = idx + 1
-        clip_dur = round(c["end"] - c["start"], 1)
+        c_start = float(c.get("start", 0.0))
+        c_end = float(c.get("end", c_start + 15.0))
+        clip_dur = round(c_end - c_start, 1)
 
         if score >= 90:
             tier_badge = f"👑 RANK #{rank_num} • S-TIER VIRAL"
@@ -1293,7 +1303,7 @@ def detect_viral_moments(
         clean_title = c.get("title", "").strip()
         clean_title = re.sub(r"^Rank\s*#?\d+\s*•\s*", "", clean_title)
         if not clean_title or clean_title in ("THE BIGGEST FISH?!", "VIRAL MOMENT", "Stream Highlight", "Highlight"):
-            category = c.get("reaction_category", "")
+            category = c.get("reaction_category", c.get("reason", "🔥 Viral Highlight"))
             if "Scream" in category or "Outburst" in category:
                 titles_pool = [
                     "HE LOST HIS MIND AT THIS 💀",
@@ -1332,31 +1342,31 @@ def detect_viral_moments(
         clip_id = f"clip_{rank_num}"
         thumb_file = f"{clip_id}_thumb.jpg"
         thumb_path = os.path.join(thumb_dir, thumb_file)
-        has_thumb = extract_clip_thumbnail(video_path, c.get("climax_t", c["start"] + 1.5), thumb_path)
+        has_thumb = extract_clip_thumbnail(video_path, c.get("climax_t", c_start + 1.5), thumb_path)
 
         clip_item = {
             "id": clip_id,
             "rank": rank_num,
             "title": f"Rank #{rank_num} • {clean_title}",
-            "start": c["start"],
-            "end": c["end"],
+            "start": c_start,
+            "end": c_end,
             "duration": clip_dur,
             "virality_score": score,
-            "reason": c["reaction_category"],
-            "badge_color": c["badge_color"],
+            "reason": c.get("reaction_category", c.get("reason", "🔥 Viral Highlight")),
+            "badge_color": c.get("badge_color", "#F59E0B"),
             "tier_badge": tier_badge,
             "thumbnail_url": f"/media/thumbnail/{clip_id}" if has_thumb else None,
             "has_thumbnail": has_thumb,
             "jaw_drop_verified": c.get("jaw_drop_verified", False),
             "cold_open_verified": c.get("cold_open_verified", False),
             "metrics": {
-                "voice_energy": int(round(c["audio_score"] * 100)),
+                "voice_energy": int(round(c.get("audio_score", 0.7) * 100)),
                 "facecam_reaction": int(round(c.get("facecam_reaction", 0.5) * 100)),
                 "jaw_drop_verified": c.get("jaw_drop_verified", False),
                 "cold_open_verified": c.get("cold_open_verified", False),
                 "dynamic_contrast": round(c.get("transient_contrast", 1.0), 1),
-                "hook_quality": int(round(c["hook_score"] * 100)),
-                "speech_density": int(round(c["speech_score"] * 100)),
+                "hook_quality": int(round(c.get("hook_score", 0.75) * 100)),
+                "speech_density": int(round(c.get("speech_score", 0.7) * 100)),
                 "action_motion": int(round(c.get("gameplay_motion", 0.5) * 100)),
                 "synergy_bonus": c.get("synergy_bonus", 0)
             }

@@ -794,6 +794,8 @@ def curate_auto_viral_clips(
     subtitles: List[Dict[str, Any]],
     video_duration: float,
     target_count: Optional[int] = None,
+    min_duration: float = 12.0,
+    max_duration: float = 45.0,
     model: Optional[str] = None
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
@@ -842,8 +844,8 @@ def curate_auto_viral_clips(
         windows=windows,
         video_duration=video_duration,
         target_count=target_n,
-        min_duration=12.0,
-        max_duration=45.0,
+        min_duration=min_duration,
+        max_duration=max_duration,
         model=model
     )
 
@@ -852,8 +854,38 @@ def curate_auto_viral_clips(
     window_cand_map = {w["window_id"]: w["orig_cand"] for w in windows}
 
     for clip in curated_clips:
-        wid = clip.get("window_id")
-        orig = window_cand_map.get(wid)
+        raw_wid = clip.get("window_id")
+        orig = None
+        # Safely normalize wid (int(wid) with try/except) so string IDs like "1" match integer keys
+        norm_wid = None
+        try:
+            if raw_wid is not None:
+                norm_wid = int(raw_wid)
+        except (ValueError, TypeError):
+            norm_wid = None
+
+        if norm_wid is not None and norm_wid in window_cand_map:
+            orig = window_cand_map[norm_wid]
+        elif raw_wid in window_cand_map:
+            orig = window_cand_map[raw_wid]
+        else:
+            # Fall back to the nearest overlapping candidate by timestamp if wid is still unmatched
+            c_start = float(clip.get("start", 0.0))
+            c_end = float(clip.get("end", c_start + 15.0))
+            c_mid = (c_start + c_end) / 2.0
+            best_cand = None
+            min_dist = float("inf")
+            for w in windows:
+                w_cand = w.get("orig_cand")
+                if not w_cand:
+                    continue
+                w_mid = (float(w_cand.get("start", 0.0)) + float(w_cand.get("end", 0.0))) / 2.0
+                dist = abs(c_mid - w_mid)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_cand = w_cand
+            orig = best_cand
+
         if orig:
             merged = dict(orig)
             merged.update(clip)

@@ -495,7 +495,6 @@ def get_encoder_args(encoder: str, threads: Optional[int] = None, bitrate: Optio
     elif encoder == "h264_vaapi":
         bufsize = "80M" if is_ultra else ("50M" if is_2k else "35M")
         return [
-            "-vaapi_device", "/dev/dri/renderD128",
             "-c:v", "h264_vaapi",
             "-b:v", target_bitrate,
             "-maxrate", target_bitrate,
