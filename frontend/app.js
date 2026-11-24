@@ -89,6 +89,350 @@ const state = {
 
 let previewDebounceTimer = null;
 
+// =========================================================================
+// SmoothProgressBar: 60FPS Asymptotic Smooth Progress & Cancellation Engine
+// =========================================================================
+class SmoothProgressBar {
+  constructor(options = {}) {
+    this.container = typeof options.container === "string" ? document.getElementById(options.container) : (options.container || options.box);
+    this.bar = typeof options.bar === "string" ? document.getElementById(options.bar) : options.bar;
+    this.statusText = typeof options.text === "string" ? document.getElementById(options.text) : (options.status || options.text);
+    this.percentText = typeof options.percent === "string" ? document.getElementById(options.percent) : options.percent;
+    this.timerText = typeof options.timer === "string" ? document.getElementById(options.timer) : options.timer;
+    this.cancelBtn = typeof options.cancelBtn === "string" ? document.getElementById(options.cancelBtn) : options.cancelBtn;
+    this.onCancel = options.onCancel || null;
+
+    this.displayedPct = 0.0;
+    this.targetPct = 0.0;
+    this.lastTargetUpdate = Date.now();
+    this.startTime = null;
+    this.timerInterval = null;
+    this.rafId = null;
+    this.isActive = false;
+
+    this.ensureUiEnhancements();
+  }
+
+  ensureUiEnhancements() {
+    if (!this.container) return;
+    this.container.classList.add("smooth-progress-container");
+    if (this.bar) this.bar.classList.add("smooth-progress-bar");
+
+    let metaStrip = this.container.querySelector(".progress-meta-strip");
+    if (!metaStrip) {
+      metaStrip = document.createElement("div");
+      metaStrip.className = "progress-meta-strip";
+
+      const topRow = this.container.firstElementChild;
+      if (topRow && topRow !== this.bar && topRow !== this.bar?.parentElement) {
+        topRow.appendChild(metaStrip);
+      } else {
+        this.container.insertBefore(metaStrip, this.container.firstChild);
+      }
+    }
+
+    if (!this.timerText && metaStrip) {
+      const existingTimer = metaStrip.querySelector(".progress-elapsed-badge");
+      if (existingTimer) {
+        this.timerText = existingTimer;
+      } else {
+        const badge = document.createElement("span");
+        badge.className = "progress-elapsed-badge";
+        badge.innerText = "00:00";
+        metaStrip.appendChild(badge);
+        this.timerText = badge;
+      }
+    }
+
+    if (!this.cancelBtn && this.onCancel && metaStrip) {
+      const existingBtn = metaStrip.querySelector(".progress-cancel-btn");
+      if (existingBtn) {
+        this.cancelBtn = existingBtn;
+      } else {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "progress-cancel-btn";
+        btn.innerHTML = `<i class="fa-solid fa-xmark"></i> Cancel`;
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (this.onCancel) this.onCancel();
+        });
+        metaStrip.appendChild(btn);
+        this.cancelBtn = btn;
+      }
+    }
+  }
+
+  start(msg = "Processing...", initPct = 5) {
+    this.isActive = true;
+    this.displayedPct = Math.max(0, initPct);
+    this.targetPct = Math.max(0, initPct);
+    this.lastTargetUpdate = Date.now();
+    this.startTime = Date.now();
+
+    if (this.container) {
+      this.container.style.display = "block";
+      this.container.style.opacity = "1";
+    }
+    if (this.bar) {
+      this.bar.classList.remove("completed", "error", "cancelled");
+      this.bar.classList.add("running");
+      this.bar.style.width = `${this.displayedPct}%`;
+    }
+    if (this.statusText) {
+      this.statusText.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${msg}`;
+    }
+    if (this.percentText) {
+      this.percentText.innerText = `${Math.round(this.displayedPct)}%`;
+      this.percentText.style.fontVariantNumeric = "tabular-nums";
+    }
+    if (this.cancelBtn) {
+      this.cancelBtn.disabled = false;
+      this.cancelBtn.style.display = "inline-flex";
+      this.cancelBtn.innerHTML = `<i class="fa-solid fa-xmark"></i> Cancel`;
+    }
+
+    if (this.timerInterval) clearInterval(this.timerInterval);
+    this.timerInterval = setInterval(() => {
+      if (!this.isActive || !this.startTime) return;
+      const sec = Math.floor((Date.now() - this.startTime) / 1000);
+      const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+      const ss = String(sec % 60).padStart(2, "0");
+      if (this.timerText) {
+        this.timerText.innerText = `${mm}:${ss}`;
+      }
+    }, 1000);
+
+    this.startAnimationLoop();
+  }
+
+  setTarget(pct, msg = null) {
+    const p = Math.max(0, Math.min(100, parseFloat(pct) || 0));
+    this.targetPct = p;
+    this.lastTargetUpdate = Date.now();
+    if (msg && this.statusText) {
+      this.statusText.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${msg}`;
+    }
+  }
+
+  startAnimationLoop() {
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+
+    const step = () => {
+      if (!this.isActive) return;
+
+      const now = Date.now();
+      if (now - this.lastTargetUpdate > 800 && this.targetPct < 94) {
+        const ceiling = Math.min(94, this.targetPct + 12);
+        if (this.targetPct < ceiling) {
+          this.targetPct += 0.08;
+        }
+      }
+
+      if (this.displayedPct < this.targetPct) {
+        const diff = this.targetPct - this.displayedPct;
+        const delta = Math.max(0.12, Math.min(diff, diff * 0.12));
+        this.displayedPct = Math.min(this.targetPct, this.displayedPct + delta);
+      } else if (this.displayedPct > this.targetPct && this.targetPct >= 100) {
+        this.displayedPct = 100;
+      }
+
+      const intVal = Math.round(this.displayedPct);
+      if (this.bar) {
+        this.bar.style.width = `${this.displayedPct.toFixed(1)}%`;
+      }
+      if (this.percentText) {
+        this.percentText.innerText = `${intVal}%`;
+      }
+
+      this.rafId = requestAnimationFrame(step);
+    };
+
+    this.rafId = requestAnimationFrame(step);
+  }
+
+  complete(msg = "Done!") {
+    this.isActive = false;
+    this.targetPct = 100.0;
+    this.displayedPct = 100.0;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.timerInterval) clearInterval(this.timerInterval);
+
+    if (this.bar) {
+      this.bar.style.width = "100%";
+      this.bar.classList.remove("running", "error", "cancelled");
+      this.bar.classList.add("completed");
+    }
+    if (this.percentText) {
+      this.percentText.innerText = "100%";
+    }
+    if (this.statusText) {
+      this.statusText.innerHTML = `<i class="fa-solid fa-circle-check" style="color:var(--accent-lime, #10B981);"></i> ${msg}`;
+    }
+    if (this.cancelBtn) {
+      this.cancelBtn.style.display = "none";
+    }
+  }
+
+  cancel(msg = "Cancelled by user") {
+    this.isActive = false;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.timerInterval) clearInterval(this.timerInterval);
+
+    if (this.bar) {
+      this.bar.classList.remove("running", "completed");
+      this.bar.classList.add("cancelled");
+    }
+    if (this.statusText) {
+      this.statusText.innerHTML = `<i class="fa-solid fa-ban" style="color:#EF4444;"></i> ${msg}`;
+    }
+    if (this.cancelBtn) {
+      this.cancelBtn.disabled = true;
+      this.cancelBtn.innerText = "Cancelled";
+    }
+  }
+
+  error(msg = "Failed") {
+    this.isActive = false;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.timerInterval) clearInterval(this.timerInterval);
+
+    if (this.bar) {
+      this.bar.classList.remove("running", "completed");
+      this.bar.classList.add("error");
+    }
+    if (this.statusText) {
+      this.statusText.innerHTML = `<i class="fa-solid fa-triangle-exclamation" style="color:#EF4444;"></i> ${msg}`;
+    }
+    if (this.cancelBtn) {
+      this.cancelBtn.style.display = "none";
+    }
+  }
+
+  reset() {
+    this.isActive = false;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.timerInterval) clearInterval(this.timerInterval);
+    this.displayedPct = 0;
+    this.targetPct = 0;
+    if (this.bar) {
+      this.bar.style.width = "0%";
+      this.bar.classList.remove("running", "completed", "error", "cancelled");
+    }
+    if (this.percentText) this.percentText.innerText = "0%";
+    if (this.timerText) this.timerText.innerText = "00:00";
+    if (this.cancelBtn) this.cancelBtn.style.display = "none";
+  }
+}
+
+async function runAsyncJob(endpoint, fetchOptions = {}, progressUiConfig = {}) {
+  const separator = endpoint.includes("?") ? "&" : "?";
+  const asyncEndpoint = `${endpoint}${separator}async_mode=1`;
+
+  let currentJobId = null;
+  let isCancelled = false;
+
+  const pBar = new SmoothProgressBar({
+    container: progressUiConfig.container || progressUiConfig.box,
+    bar: progressUiConfig.bar,
+    text: progressUiConfig.text || progressUiConfig.status,
+    percent: progressUiConfig.percent,
+    timer: progressUiConfig.timer,
+    cancelBtn: progressUiConfig.cancelBtn,
+    onCancel: async () => {
+      if (!currentJobId || isCancelled) return;
+      isCancelled = true;
+      if (pBar.cancelBtn) {
+        pBar.cancelBtn.disabled = true;
+        pBar.cancelBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Cancelling...`;
+      }
+      try {
+        await fetch(`/api/jobs/${currentJobId}/cancel`, { method: "POST" });
+        if (typeof showToast === "function") showToast("Cancellation requested...");
+      } catch (err) {
+        console.warn("Cancel request error:", err);
+      }
+    }
+  });
+
+  const initMsg = progressUiConfig.initialText || "Starting background job...";
+  pBar.start(initMsg, progressUiConfig.initialPercent || 5);
+
+  let pollTimer = null;
+
+  try {
+    const res = await fetch(asyncEndpoint, fetchOptions);
+    if (!res.ok) {
+      const errTxt = await res.text();
+      let errMsg = errTxt;
+      try {
+        const parsed = JSON.parse(errTxt);
+        if (parsed.detail) errMsg = parsed.detail;
+      } catch (_) {}
+      throw new Error(errMsg || `Request failed (${res.status})`);
+    }
+
+    const initialData = await res.json();
+
+    if (!initialData || initialData.status !== "queued" || !initialData.job_id) {
+      pBar.complete(progressUiConfig.completeText || "Completed!");
+      return initialData;
+    }
+
+    currentJobId = initialData.job_id;
+
+    return await new Promise((resolve, reject) => {
+      pollTimer = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`/api/jobs/${currentJobId}`);
+          if (!pollRes.ok) {
+            clearInterval(pollTimer);
+            pBar.error(`Status error (${pollRes.status})`);
+            reject(new Error(`Failed to check job status (${pollRes.status})`));
+            return;
+          }
+
+          const job = await pollRes.json();
+
+          if (job.status === "running") {
+            pBar.setTarget(job.percent || 15, job.step || "Processing...");
+            if (progressUiConfig.onProgress) {
+              progressUiConfig.onProgress(job);
+            }
+          } else if (job.status === "completed") {
+            clearInterval(pollTimer);
+            pBar.complete(job.step || progressUiConfig.completeText || "Completed!");
+            resolve(job.result);
+          } else if (job.status === "cancelled") {
+            clearInterval(pollTimer);
+            pBar.cancel("Cancelled by user");
+            const cancelErr = new Error("Job cancelled by user");
+            cancelErr.isCancelled = true;
+            reject(cancelErr);
+          } else if (job.status === "error") {
+            clearInterval(pollTimer);
+            pBar.error(job.error || "Job failed");
+            reject(new Error(job.error || "Job failed with an error"));
+          }
+        } catch (pollErr) {
+          console.warn("Poll fetch error:", pollErr);
+        }
+      }, 350);
+    });
+
+  } catch (err) {
+    if (pollTimer) clearInterval(pollTimer);
+    if (err.isCancelled) {
+      pBar.cancel("Job cancelled");
+    } else {
+      pBar.error(err.message || "Failed");
+    }
+    throw err;
+  }
+}
+
+
 // Initialization
 document.addEventListener("DOMContentLoaded", () => {
   const safeInit = (fn, name) => {
@@ -2860,17 +3204,6 @@ async function runTranscribeAllClips() {
     clip_title: state.clips[0].title
   }, 0);
 
-  let pollInterval = setInterval(async () => {
-    try {
-      const pRes = await fetch("/api/transcribe_progress");
-      if (pRes.ok) {
-        const pData = await pRes.json();
-        const elapsedSec = (Date.now() - startTimeMs) / 1000.0;
-        updateDualTranscribeProgress(pData, elapsedSec);
-      }
-    } catch (_) {}
-  }, 350);
-
   try {
     const lang = document.getElementById("select-lang")?.value || "auto";
     const chosenModel = document.getElementById("select-whisper-model")?.value || (state.subtitlesConfig.model_name || "base.en");
@@ -2880,7 +3213,7 @@ async function runTranscribeAllClips() {
     const trackSel = document.getElementById("select-audio-track");
     const audioTrack = trackSel ? parseInt(trackSel.value || "0") : 0;
 
-    const res = await fetch("/api/transcribe_all_clips", {
+    const data = await runAsyncJob("/api/transcribe_all_clips", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2891,9 +3224,17 @@ async function runTranscribeAllClips() {
         streamer_voice_focus: streamerVoiceFocus,
         audio_track: audioTrack
       })
+    }, {
+      container: "transcribe-progress-box",
+      bar: "transcribe-progress-bar",
+      text: "transcribe-status-text",
+      percent: "transcribe-percent-text",
+      initialText: `Starting batch transcription for ${state.clips.length} clips with streamer voice isolation...`,
+      initialPercent: 5,
+      onProgress: (job) => {
+        updateDualTranscribeProgress(job, job.elapsed_sec);
+      }
     });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
 
     state.clips = data.clips;
     state.subtitles = data.subtitles || [];
@@ -2915,14 +3256,22 @@ async function runTranscribeAllClips() {
     triggerPreview(true);
     dismissDualTranscribeProgress(4500);
   } catch (err) {
-    updateDualTranscribeProgress({
-      status: "error",
-      step: `Batch transcription error: ${err.message}`,
-      percent: 0
-    });
-    alert("Batch transcription error: " + err.message);
+    if (err.isCancelled) {
+      showToast("Batch transcription cancelled.");
+      updateDualTranscribeProgress({
+        status: "cancelled",
+        step: "Batch transcription cancelled by user",
+        percent: 0
+      });
+    } else {
+      updateDualTranscribeProgress({
+        status: "error",
+        step: `Batch transcription error: ${err.message}`,
+        percent: 0
+      });
+      alert("Batch transcription error: " + err.message);
+    }
   } finally {
-    clearInterval(pollInterval);
     if (btnAll) {
       btnAll.innerHTML = origBtnText;
       btnAll.disabled = false;
@@ -2983,17 +3332,6 @@ async function runTranscription(forSelectedClip = false) {
     clip_title: forSelectedClip ? (state.clips.find(c => c.id === state.selectedClipId)?.title || "Active Clip") : "Full Video"
   }, 0);
 
-  let pollInterval = setInterval(async () => {
-    try {
-      const pRes = await fetch("/api/transcribe_progress");
-      if (pRes.ok) {
-        const pData = await pRes.json();
-        const elapsedSec = (Date.now() - startTimeMs) / 1000.0;
-        updateDualTranscribeProgress(pData, elapsedSec);
-      }
-    } catch (_) {}
-  }, 350);
-  
   try {
     const lang = document.getElementById("select-lang")?.value || "auto";
     const chosenModel = document.getElementById("select-whisper-model")?.value || (state.subtitlesConfig.model_name || "base.en");
@@ -3013,13 +3351,22 @@ async function runTranscription(forSelectedClip = false) {
       audio_track: audioTrack
     };
 
-    const res = await fetch("/api/transcribe", {
+    const data = await runAsyncJob("/api/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
+    }, {
+      container: "transcribe-progress-box",
+      bar: "transcribe-progress-bar",
+      text: "transcribe-status-text",
+      percent: "transcribe-percent-text",
+      initialText: forSelectedClip ? `Extracting clip audio (${duration.toFixed(1)}s) & running Whisper AI...` : "Extracting audio & loading Whisper AI...",
+      initialPercent: 10,
+      onProgress: (job) => {
+        updateDualTranscribeProgress(job, job.elapsed_sec);
+      }
     });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+
     state.subtitles = data.subtitles || [];
 
     // Also update clip object if single clip was transcribed
@@ -3048,14 +3395,22 @@ async function runTranscription(forSelectedClip = false) {
     triggerPreview(true);
     dismissDualTranscribeProgress(4000);
   } catch (err) {
-    updateDualTranscribeProgress({
-      status: "error",
-      step: `Transcription error: ${err.message}`,
-      percent: 0
-    });
-    showToast(`Notice: ${err.message}`, "error");
+    if (err.isCancelled) {
+      showToast("Transcription cancelled.");
+      updateDualTranscribeProgress({
+        status: "cancelled",
+        step: "Transcription cancelled by user",
+        percent: 0
+      });
+    } else {
+      updateDualTranscribeProgress({
+        status: "error",
+        step: `Transcription error: ${err.message}`,
+        percent: 0
+      });
+      showToast(`Notice: ${err.message}`, "error");
+    }
   } finally {
-    clearInterval(pollInterval);
     if (targetBtn) {
       targetBtn.innerHTML = origBtnText;
       targetBtn.disabled = false;
@@ -3269,50 +3624,6 @@ async function exportSelectedClip() {
   const pBar = document.getElementById("export-progress-bar");
   const pStatus = document.getElementById("export-status-text");
   const pPercent = document.getElementById("export-percent-text");
-  
-  pBox.style.display = "block";
-  if (!globalExportTracker && pBar) {
-    globalExportTracker = new SmoothProgressTracker(pBar, pPercent, pStatus, { maxAutoPercent: 98 });
-  }
-  if (globalExportTracker) {
-    globalExportTracker.reset();
-    globalExportTracker.setTarget(5, `Preparing render: ${clip.title}...`);
-    globalExportTracker.startAutoAdvance(350);
-  } else {
-    pBar.style.width = "5%";
-    pStatus.innerText = `Preparing render: ${clip.title}...`;
-    pPercent.innerText = "5%";
-  }
-
-  let pollInterval = setInterval(async () => {
-    try {
-      const pRes = await fetch("/api/progress");
-      if (pRes.ok) {
-        const pData = await pRes.json();
-        if (pData.percent !== undefined) {
-          const pct = Math.max(5, Math.min(100, pData.percent));
-          if (globalExportTracker) {
-            globalExportTracker.setTarget(pct, pData.title);
-          } else {
-            pBar.style.width = `${pct}%`;
-            pPercent.innerText = `${pct}%`;
-            if (pData.title) pStatus.innerText = pData.title;
-          }
-
-          const sSpeed = document.getElementById("export-speed-text");
-          if (sSpeed && pData.speed) sSpeed.innerText = pData.speed;
-
-          const sFrame = document.getElementById("export-frame-text");
-          if (sFrame && pData.frame !== undefined) sFrame.innerText = pData.frame;
-
-          const sTime = document.getElementById("export-time-text");
-          if (sTime && pData.cur_sec !== undefined && pData.duration !== undefined) {
-            sTime.innerText = `${pData.cur_sec}s / ${pData.duration}s`;
-          }
-        }
-      }
-    } catch (_) {}
-  }, 250);
 
   try {
     const checkBurn = document.getElementById("check-burn-subs");
@@ -3324,7 +3635,7 @@ async function exportSelectedClip() {
     clip.template_config = JSON.parse(JSON.stringify(state.template));
     clip.subtitle_config = JSON.parse(JSON.stringify(state.subtitlesConfig));
 
-    const res = await fetch("/api/export_clip", {
+    const result = await runAsyncJob("/api/export_clip", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3335,17 +3646,16 @@ async function exportSelectedClip() {
         subtitles: subsToSend,
         encoder: selectedEncoder
       })
+    }, {
+      container: pBox,
+      bar: pBar,
+      text: pStatus,
+      percent: pPercent,
+      initialText: `Preparing render: ${clip.title}...`,
+      initialPercent: 5
     });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    
-    if (globalExportTracker) {
-      globalExportTracker.complete(`Render complete: ${data.clip.title}`);
-    } else {
-      pBar.style.width = "100%";
-      pStatus.innerText = `Render complete: ${data.clip.title}`;
-      pPercent.innerText = "100%";
-    }
+
+    const data = result;
     
     fetchOutputs();
     try {
@@ -3354,10 +3664,11 @@ async function exportSelectedClip() {
       console.warn("Could not auto-open video modal:", modalErr);
     }
   } catch (err) {
-    if (globalExportTracker) globalExportTracker.stopAutoAdvance();
-    alert("Export error: " + err.message);
-  } finally {
-    clearInterval(pollInterval);
+    if (err.isCancelled) {
+      showToast("Export cancelled.");
+    } else {
+      alert("Export error: " + err.message);
+    }
   }
 }
 
@@ -3371,37 +3682,6 @@ async function exportAllClips() {
   const pBar = document.getElementById("export-progress-bar");
   const pStatus = document.getElementById("export-status-text");
   const pPercent = document.getElementById("export-percent-text");
-
-  pBox.style.display = "block";
-  pBar.style.width = "5%";
-  pStatus.innerText = `Starting batch render of ${state.clips.length} clips...`;
-  pPercent.innerText = "5%";
-
-  let pollInterval = setInterval(async () => {
-    try {
-      const pRes = await fetch("/api/progress");
-      if (pRes.ok) {
-        const pData = await pRes.json();
-        if (pData.percent !== undefined) {
-          const pct = Math.max(5, Math.min(100, pData.percent));
-          pBar.style.width = `${pct}%`;
-          pPercent.innerText = `${pct}%`;
-          if (pData.title) pStatus.innerText = pData.title;
-
-          const sSpeed = document.getElementById("export-speed-text");
-          if (sSpeed && pData.speed) sSpeed.innerText = pData.speed;
-
-          const sFrame = document.getElementById("export-frame-text");
-          if (sFrame && pData.frame !== undefined) sFrame.innerText = pData.frame;
-
-          const sTime = document.getElementById("export-time-text");
-          if (sTime && pData.cur_sec !== undefined && pData.duration !== undefined) {
-            sTime.innerText = `${pData.cur_sec}s / ${pData.duration}s`;
-          }
-        }
-      }
-    } catch (_) {}
-  }, 250);
 
   try {
     const checkBurn = document.getElementById("check-burn-subs");
@@ -3417,7 +3697,7 @@ async function exportAllClips() {
       c.subtitle_config = JSON.parse(JSON.stringify(state.subtitlesConfig));
     });
 
-    const res = await fetch("/api/export_all", {
+    const data = await runAsyncJob("/api/export_all", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3429,13 +3709,14 @@ async function exportAllClips() {
         export_as_zip: shouldZip,
         encoder: selectedEncoder
       })
+    }, {
+      container: pBox,
+      bar: pBar,
+      text: pStatus,
+      percent: pPercent,
+      initialText: `Starting batch render of ${state.clips.length} clips...`,
+      initialPercent: 5
     });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-
-    pBar.style.width = "100%";
-    pStatus.innerText = `Batch render complete! ${data.exported.length} clips exported.`;
-    pPercent.innerText = "100%";
 
     if (data.zip && data.zip.download_url) {
       showZipDownloadBanner(data.zip);
@@ -3446,9 +3727,11 @@ async function exportAllClips() {
 
     fetchOutputs();
   } catch (err) {
-    alert("Batch export error: " + err.message);
-  } finally {
-    clearInterval(pollInterval);
+    if (err.isCancelled) {
+      showToast("Batch export cancelled.");
+    } else {
+      alert("Batch export error: " + err.message);
+    }
   }
 }
 
@@ -5852,39 +6135,21 @@ function initStreamUrlLoader() {
 
       btnAudioFast.disabled = true;
       btnAudioFast.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Audio Pull (3s)...`;
-      if (progressBox) progressBox.style.display = "block";
-      if (progressText) progressText.innerHTML = `<i class="fa-solid fa-bolt" style="color: var(--accent-lime);"></i> Fast Mode: Pulling lightweight voice audio track (~30MB)...`;
-      if (progressBar) progressBar.style.width = "25%";
-      if (progressPercent) progressPercent.innerText = "25%";
-
-      const pInterval = setInterval(async () => {
-        try {
-          const pRes = await fetch("/api/stream_progress");
-          if (pRes.ok) {
-            const pData = await pRes.json();
-            if (pData.percent) {
-              if (progressBar) progressBar.style.width = `${pData.percent}%`;
-              if (progressPercent) progressPercent.innerText = `${pData.percent}%`;
-              if (progressText) progressText.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${pData.step}`;
-            }
-          }
-        } catch (_) {}
-      }, 500);
 
       try {
-        const res = await fetch("/api/scan_stream_audio", {
+        const data = await runAsyncJob("/api/scan_stream_audio", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url })
+        }, {
+          container: progressBox,
+          bar: progressBar,
+          text: progressText,
+          percent: progressPercent,
+          initialText: "Fast Mode: Pulling lightweight voice audio track (~30MB)...",
+          initialPercent: 20
         });
-        clearInterval(pInterval);
 
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ detail: "Audio scan failed" }));
-          throw new Error(err.detail || "Audio scan failed");
-        }
-
-        const data = await res.json();
         currentMeta = data.meta;
 
         if (thumbImg) thumbImg.src = currentMeta.thumbnail || "";
@@ -5992,40 +6257,10 @@ function initStreamUrlLoader() {
       }
 
       btnClip.disabled = true;
-      if (progressBox) progressBox.style.display = "block";
-      if (!globalStreamTracker && progressBar) {
-        globalStreamTracker = new SmoothProgressTracker(progressBar, progressPercent, progressText, { maxAutoPercent: 94 });
-      }
-      if (globalStreamTracker) {
-        globalStreamTracker.reset();
-        globalStreamTracker.setTarget(10, `<i class="fa-solid fa-spinner fa-spin"></i> Downloading stream slice (${formatTimeHMS(sSec)} to ${formatTimeHMS(eSec)})...`);
-        globalStreamTracker.startAutoAdvance(280);
-      } else {
-        if (progressBar) progressBar.style.width = "5%";
-        if (progressPercent) progressPercent.innerText = "5%";
-        if (progressText) progressText.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Downloading stream slice (${formatTimeHMS(sSec)} to ${formatTimeHMS(eSec)})...`;
-      }
-
-      // Poll progress endpoint
-      progressInterval = setInterval(async () => {
-        try {
-          const pRes = await fetch("/api/stream_progress");
-          if (pRes.ok) {
-            const pData = await pRes.json();
-            if (globalStreamTracker && pData.percent) {
-              globalStreamTracker.setTarget(pData.percent, `<i class="fa-solid fa-spinner fa-spin"></i> ${pData.step}`);
-            } else {
-              if (progressBar && pData.percent) progressBar.style.width = `${pData.percent}%`;
-              if (progressPercent && pData.percent) progressPercent.innerText = `${pData.percent}%`;
-              if (progressText && pData.step) progressText.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${pData.step}`;
-            }
-          }
-        } catch (_) {}
-      }, 500);
 
       try {
         const qualitySel = document.getElementById("select-stream-quality")?.value || "max";
-        const res = await fetch("/api/load_stream_range", {
+        const data = await runAsyncJob("/api/load_stream_range", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -6035,16 +6270,14 @@ function initStreamUrlLoader() {
             title: currentMeta ? currentMeta.title : "Stream Highlight",
             quality: qualitySel
           })
+        }, {
+          container: progressBox,
+          bar: progressBar,
+          text: progressText,
+          percent: progressPercent,
+          initialText: `Downloading stream slice (${formatTimeHMS(sSec)} to ${formatTimeHMS(eSec)})...`,
+          initialPercent: 10
         });
-
-        clearInterval(progressInterval);
-
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ detail: "Extraction failed" }));
-          throw new Error(err.detail || "Stream extraction failed");
-        }
-
-        const data = await res.json();
         if (globalStreamTracker) {
           globalStreamTracker.complete(`<i class="fa-solid fa-circle-check" style="color:var(--accent-lime);"></i> Slice loaded into Studio!`);
         } else {
@@ -6065,8 +6298,9 @@ function initStreamUrlLoader() {
         }, 2500);
       } catch (err) {
         clearInterval(progressInterval);
-        if (progressText) progressText.innerHTML = `<i class="fa-solid fa-triangle-exclamation" style="color:#ef4444;"></i> Failed: ${err.message}`;
-        if (err.message && (err.message.toLowerCase().includes("bot") || err.message.toLowerCase().includes("sign in"))) {
+        if (err.isCancelled) {
+          showToast("Stream slice load cancelled.");
+        } else if (err.message && (err.message.toLowerCase().includes("bot") || err.message.toLowerCase().includes("sign in"))) {
           alert(
             "🛡️ YouTube Anti-Bot Verification:\n\n" +
             "YouTube has gated this stream link behind an automated anti-bot check ('Sign in to confirm you're not a bot').\n\n" +

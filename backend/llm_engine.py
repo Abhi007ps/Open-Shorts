@@ -3,7 +3,9 @@ import json
 import re
 import urllib.request
 import urllib.error
+import threading
 from typing import List, Dict, Any, Optional, Tuple
+from backend.transcriber import JobCancelledError
 
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
@@ -859,7 +861,8 @@ def curate_tournament_top_clips(
     min_duration: float = 15.0,
     max_duration: float = 50.0,
     model: Optional[str] = None,
-    progress_callback: Optional[Callable[[str, int], None]] = None
+    progress_callback: Optional[Callable[[str, int], None]] = None,
+    cancel_event: Optional[threading.Event] = None
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     2-ROUND CHAMPIONSHIP TOURNAMENT CURATION ENGINE:
@@ -867,7 +870,11 @@ def curate_tournament_top_clips(
     stays razor-sharp in small context windows (8 windows per batch), advancing top finalists
     to a Championship Finals round where moments are pitted head-to-head.
     Guarantees the absolute top 6-8 micro-stories across the full stream.
+    Supports thread-safe cancellation between batches and rounds.
     """
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Tournament curation cancelled by user")
+
     if not windows:
         return [], "No candidate windows provided."
 
@@ -892,6 +899,9 @@ def curate_tournament_top_clips(
     print(f"[LLM Engine] Tournament Round 1: Processing {len(eval_pool)} candidates in {len(batches)} qualifier pools...")
 
     for b_idx, batch in enumerate(batches):
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Tournament curation cancelled by user")
+
         if progress_callback:
             pct = 40 + int((b_idx + 1) * 20 / len(batches))
             progress_callback(f"Tournament Round 1: Evaluating Qualifier Group {b_idx + 1}/{len(batches)}...", pct)
@@ -909,6 +919,9 @@ def curate_tournament_top_clips(
             w_orig = next((w for w in batch if w.get("window_id") == w_id), None)
             clip["_orig_window"] = w_orig
             round1_finalists.append(clip)
+
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Tournament curation cancelled by user")
 
     if not round1_finalists:
         return curate_story_clips_from_windows(
@@ -931,6 +944,9 @@ def curate_tournament_top_clips(
             c["badge_color"] = "#EF4444" if r_idx <= 2 else "#F59E0B"
             c.pop("_orig_window", None)
         return round1_finalists, "Tournament Finalists Curated across Full Stream"
+
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Tournament curation cancelled by user")
 
     # Round 2: Championship Finals
     if progress_callback:

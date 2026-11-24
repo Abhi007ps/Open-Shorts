@@ -4,7 +4,14 @@ import json
 import re
 import hashlib
 import wave
+import threading
+import time
 from typing import List, Dict, Any, Optional
+
+class JobCancelledError(Exception):
+    """Raised when a background job or subprocess was cancelled by the user."""
+    pass
+
 from backend.hardware import FFMPEG_BIN, WHISPER_CLI, get_cpu_info
 
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
@@ -550,7 +557,8 @@ def transcribe_video(
     duration: float = None,
     streamer_voice_focus: bool = True,
     audio_track: int = 0,
-    progress_callback: Optional[Any] = None
+    progress_callback: Optional[Any] = None,
+    cancel_event: Optional[threading.Event] = None
 ) -> List[Dict[str, Any]]:
     """
     Transcribes audio from a video using local high-speed whisper-cli with true token alignment.
@@ -558,7 +566,11 @@ def transcribe_video(
     When streamer_voice_focus is True, only foreground streamer speech is transcribed,
     filtering out background game audio, music, and in-game dialogue.
     Applies 5ms sub-frame vocal energy and attack derivative snapping for extreme CapCut-grade synchronization.
+    Supports live percentage progress streaming (-pp) and thread-safe cancellation.
     """
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Transcription cancelled by user")
+
     # Auto-pick optimal model:
     # For long livestream files (>300s), auto-pick lightweight tiny.en for 2.6x faster ingestion on desktop CPUs.
     # For short viral clips (<300s), prioritize base.en for top-tier slang accuracy and alignment.
@@ -577,6 +589,9 @@ def transcribe_video(
     srt_path = None
 
     try:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Transcription cancelled by user")
+
         # 1. Extract audio (full or clip slice with streamer voice focus and accurate zero-drift seek)
         wav_path = extract_audio_wav(
             video_path, 
@@ -590,7 +605,10 @@ def transcribe_video(
         srt_path = f"{base_out}.srt"
         
         if progress_callback:
-            progress_callback("Running neural speech recognition (Whisper AI)...", 45)
+            progress_callback("Running neural speech recognition (Whisper AI)...", 20)
+
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Transcription cancelled by user")
 
         # Guarantee WAV is non-empty and has readable PCM frames before invoking Whisper to avoid miniaudio decoding crash (exit 11)
         need_silent_gen = False
@@ -632,7 +650,7 @@ def transcribe_video(
             "-nth", "0.60", # Speech threshold: preserves quiet words and whispered speech
             "-lpt", "-0.70", # Logprob threshold
             "-et", "2.60", # Entropy threshold: rejects repetitive low-information hallucination cycles
-            "-np" # No console flooding: prevents Windows pipe buffer stalls
+            "-pp" # Live percentage progress output to stderr
         ]
         dtw_preset = get_dtw_preset(model_path)
         if dtw_preset:
@@ -643,28 +661,130 @@ def transcribe_video(
         elif language == "auto" and "tiny.en" not in model_path and "base.en" not in model_path:
             cmd += ["-l", "auto"]
 
+        pass1_success = False
+        stderr_lines = []
         try:
-            res = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-            if res.returncode != 0:
-                print(f"[WARN] Whisper pass 1 returned exit {res.returncode}: {res.stderr.strip() if res.stderr else ''}")
-                # Retry with minimal parameters and disable GPU (-ng) for CPU fallback
-                simple_cmd = [
-                    WHISPER_CLI,
-                    "-m", model_path,
-                    "-f", wav_path,
-                    "-ojf",
-                    "-osrt",
-                    "-of", base_out,
-                    "-t", whisper_threads,
-                    "-ng"
-                ]
-                res2 = subprocess.run(simple_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-                if res2.returncode != 0:
-                    print(f"[WARN] Whisper fallback also exited with {res2.returncode}. Returning empty subtitles for silent/unrecognized audio.")
-                    return []
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Transcription cancelled by user")
+
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1
+            )
+
+            last_pct = -1
+            def stream_whisper_stderr():
+                nonlocal last_pct
+                buf = ""
+                try:
+                    while True:
+                        ch = proc.stderr.read(1)
+                        if not ch:
+                            break
+                        if ch in ("\r", "\n"):
+                            line = buf.strip()
+                            buf = ""
+                            if line:
+                                stderr_lines.append(line)
+                                m = re.search(r'progress\s*=\s*(\d+)%', line, re.IGNORECASE)
+                                if not m:
+                                    m = re.search(r'(\d+)%', line)
+                                if m:
+                                    try:
+                                        w_pct = int(m.group(1))
+                                        if w_pct != last_pct and 0 <= w_pct <= 100:
+                                            last_pct = w_pct
+                                            # Map Whisper's 0..100% cleanly into overall transcription range 20..82%
+                                            mapped_pct = int(20 + (w_pct / 100.0) * 62)
+                                            if progress_callback:
+                                                progress_callback(f"Transcribing speech ({w_pct}%)...", mapped_pct)
+                                    except Exception:
+                                        pass
+                        else:
+                            buf += ch
+                    if buf.strip():
+                        stderr_lines.append(buf.strip())
+                except Exception:
+                    pass
+
+            t_stream = threading.Thread(target=stream_whisper_stderr, daemon=True)
+            t_stream.start()
+
+            while proc.poll() is None:
+                if cancel_event and cancel_event.is_set():
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1.5)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    raise JobCancelledError("Transcription cancelled by user")
+                t_stream.join(timeout=0.1)
+
+            t_stream.join(timeout=1.0)
+            if proc.returncode == 0:
+                pass1_success = True
+            else:
+                raw_err = "\n".join(stderr_lines)
+                print(f"[WARN] Whisper pass 1 returned exit {proc.returncode}: {raw_err[:200]}")
+        except JobCancelledError:
+            raise
         except Exception as exc:
-            print(f"[WARN] Whisper execution encountered error: {exc}. Returning empty subtitles.")
-            return []
+            print(f"[WARN] Whisper pass 1 execution error: {exc}")
+
+        # Fallback Pass 2: Retry with minimal parameters, without -pp, and disable GPU (-ng) for CPU fallback
+        if not pass1_success:
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Transcription cancelled by user")
+            simple_cmd = [
+                WHISPER_CLI,
+                "-m", model_path,
+                "-f", wav_path,
+                "-ojf",
+                "-osrt",
+                "-of", base_out,
+                "-t", whisper_threads,
+                "-ng"
+            ]
+            try:
+                proc2 = subprocess.Popen(
+                    simple_cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+                while proc2.poll() is None:
+                    if cancel_event and cancel_event.is_set():
+                        try:
+                            proc2.terminate()
+                            proc2.wait(timeout=1.5)
+                        except Exception:
+                            try:
+                                proc2.kill()
+                            except Exception:
+                                pass
+                        raise JobCancelledError("Transcription cancelled by user")
+                    time.sleep(0.1)
+                if proc2.returncode != 0:
+                    print(f"[WARN] Whisper fallback also exited with {proc2.returncode}. Returning empty subtitles for silent/unrecognized audio.")
+                    return []
+            except JobCancelledError:
+                raise
+            except Exception as e2:
+                print(f"[WARN] Whisper fallback error: {e2}. Returning empty subtitles.")
+                return []
+
         
         raw_words = []
         if os.path.exists(json_path):

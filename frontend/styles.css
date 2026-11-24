@@ -1591,3 +1591,81 @@ input[type="checkbox"]:checked::after {
   transform: translateY(-1px);
 }
 
+/* ==========================================================================
+   SMOOTH 60FPS PROGRESS BARS & ASYNC JOB CONTROLLER
+   ========================================================================== */
+.smooth-progress-container {
+  position: relative;
+  transition: all 0.25s ease;
+}
+
+.smooth-progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #7C3AED, #8B5CF6, #A78BFA);
+  background-size: 200% 100%;
+  position: relative;
+  overflow: hidden;
+  transition: width 0.08s linear;
+}
+
+.smooth-progress-bar.running {
+  animation: progressShimmer 2s infinite linear;
+}
+
+.smooth-progress-bar.completed {
+  background: linear-gradient(90deg, #10B981, #34D399) !important;
+  animation: none;
+}
+
+.smooth-progress-bar.cancelled,
+.smooth-progress-bar.error {
+  background: linear-gradient(90deg, #EF4444, #F87171) !important;
+  animation: none;
+}
+
+@keyframes progressShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.progress-meta-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-elapsed-badge {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-muted, #94A3B8);
+  font-variant-numeric: tabular-nums;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.progress-cancel-btn {
+  background: rgba(239, 68, 68, 0.12);
+  color: #F87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.15s ease;
+}
+
+.progress-cancel-btn:hover {
+  background: #EF4444;
+  color: #FFFFFF;
+  border-color: #EF4444;
+  transform: translateY(-1px);
+}
+
+

@@ -4,7 +4,9 @@ import subprocess
 import json
 import uuid
 import shutil
+import threading
 from typing import Dict, Any, List, Optional, Callable
+from backend.transcriber import JobCancelledError
 from backend.template_engine import generate_template_assets, build_composite_filtergraph, generate_hook_headline_asset
 from backend.subtitle_generator import generate_ass_subtitles, hex_to_ass_color
 from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, REALESRGAN_BIN, get_best_encoder, get_encoder_args, probe_hardware_encoders, get_cpu_info
@@ -467,7 +469,8 @@ def render_clip(
     encoder: Optional[str] = None,
     progress_callback: Optional[Callable[[int, float, float, str, int], None]] = None,
     video_meta: Optional[Dict[str, Any]] = None,
-    workers_count: int = 1
+    workers_count: int = 1,
+    cancel_event: Optional[threading.Event] = None
 ) -> Dict[str, Any]:
     """
     Renders a high quality vertical 9:16 clip with full template, upscaling, enhancement,
@@ -953,6 +956,21 @@ def render_clip(
         
         if proc.stdout:
             for line in proc.stdout:
+                if cancel_event and cancel_event.is_set():
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=2.0)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    if os.path.exists(output_path):
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                    raise JobCancelledError("Export cancelled by user")
                 line = line.strip()
                 if "=" in line:
                     k, v = line.split("=", 1)
@@ -967,7 +985,7 @@ def render_clip(
                         try:
                             cur_sec = float(v) / 1000000.0
                             if duration > 0:
-                                pct = min(98, max(5, int((cur_sec / duration) * 100)))
+                                pct = int(min(98, max(2, (cur_sec / duration) * 100)))
                                 if progress_callback:
                                     progress_callback(pct, cur_sec, duration, cur_speed, cur_frame)
                         except Exception:
@@ -978,6 +996,13 @@ def render_clip(
                             
         proc.wait()
         t_err.join(timeout=2.0)
+        if cancel_event and cancel_event.is_set():
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+            raise JobCancelledError("Export cancelled by user")
         ret = proc.returncode
         if ret != 0:
             err_msg = "".join(stderr_lines).strip() or "FFmpeg render error"
@@ -985,9 +1010,25 @@ def render_clip(
 
     render_success = False
     try:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Export cancelled by user")
         run_ffmpeg_with_progress(full_cmd)
         render_success = True
+    except JobCancelledError:
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+        raise
     except subprocess.CalledProcessError as e:
+        if cancel_event and cancel_event.is_set():
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+            raise JobCancelledError("Export cancelled by user")
         # Hardware acceleration fallback safety: if GPU encoder fails, immediately retry with ultrafast CPU
         if active_encoder != "libx264":
             print(f"Hardware encoder '{active_encoder}' failed ({e.stderr.decode('utf-8', errors='ignore')[:120] if hasattr(e, 'stderr') and e.stderr else ''}). Falling back to multi-core CPU libx264...")
@@ -1012,6 +1053,8 @@ def render_clip(
                 "-movflags", "+faststart",
                 output_path
             ])
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Export cancelled by user")
             run_ffmpeg_with_progress(fallback_cmd)
             render_success = True
         else:

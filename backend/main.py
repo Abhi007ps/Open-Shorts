@@ -8,7 +8,7 @@ import zipfile
 import threading
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from backend.clipper import probe_video, auto_generate_clips, generate_preview_frame, render_clip
 from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, get_hardware_profile, get_best_encoder
-from backend.transcriber import transcribe_video, group_words_into_segments, MODELS_DIR
+from backend.transcriber import transcribe_video, group_words_into_segments, MODELS_DIR, JobCancelledError
 from backend.subtitle_generator import generate_ass_subtitles, generate_srt_subtitles
 from backend.viral_detector import detect_viral_moments
 
@@ -131,6 +131,102 @@ CURRENT_STATE: Dict[str, Any] = {
     "export_progress": {"status": "idle", "current_clip": 0, "total_clips": 0, "percent": 0, "title": ""},
     "transcribe_progress": {"status": "idle", "step": "Ready", "percent": 0}
 }
+
+# ==============================================================================
+# NON-BLOCKING BACKGROUND JOB MANAGER & CANCELLATION ENGINE
+# ==============================================================================
+JOBS: Dict[str, Dict[str, Any]] = {}
+JOB_CANCEL_EVENTS: Dict[str, threading.Event] = {}
+
+def start_background_job(job_type: str, worker_fn: Callable[[str, threading.Event, Callable[[int, Optional[str]], None]], Any]) -> Dict[str, Any]:
+    job_id = uuid.uuid4().hex[:12]
+    cancel_event = threading.Event()
+    with STATE_LOCK:
+        # Prune old completed/cancelled/error jobs if exceeding 40 entries
+        if len(JOBS) > 40:
+            prunable = [jid for jid, j in JOBS.items() if j.get("status") in ("completed", "cancelled", "error")]
+            prunable.sort(key=lambda jid: JOBS[jid].get("started_at", 0))
+            for jid in prunable[:max(1, len(JOBS) - 30)]:
+                JOBS.pop(jid, None)
+                JOB_CANCEL_EVENTS.pop(jid, None)
+
+        job_data = {
+            "job_id": job_id,
+            "type": job_type,
+            "status": "running",
+            "percent": 1,
+            "step": "Starting...",
+            "started_at": time.time(),
+            "elapsed_sec": 0.0,
+            "result": None,
+            "error": None
+        }
+        JOBS[job_id] = job_data
+        JOB_CANCEL_EVENTS[job_id] = cancel_event
+
+    def update_progress(*args, **kwargs):
+        with STATE_LOCK:
+            if job_id not in JOBS or JOBS[job_id].get("status") != "running":
+                return
+            pct = None
+            step = None
+            if len(args) == 1:
+                if isinstance(args[0], (int, float)):
+                    pct = int(args[0])
+                else:
+                    step = str(args[0])
+            elif len(args) >= 2:
+                if isinstance(args[0], (int, float)):
+                    pct = int(args[0])
+                    step = str(args[1])
+                else:
+                    step = str(args[0])
+                    pct = int(args[1]) if isinstance(args[1], (int, float)) else None
+            if "percent" in kwargs:
+                pct = int(kwargs["percent"])
+            if "step" in kwargs:
+                step = str(kwargs["step"])
+            if pct is not None:
+                JOBS[job_id]["percent"] = max(1, min(100, pct))
+            if step is not None:
+                JOBS[job_id]["step"] = str(step)
+
+    def runner():
+        try:
+            res = worker_fn(job_id, cancel_event, update_progress)
+            with STATE_LOCK:
+                if job_id in JOBS:
+                    if cancel_event.is_set():
+                        JOBS[job_id]["status"] = "cancelled"
+                        JOBS[job_id]["step"] = "Cancelled"
+                        JOBS[job_id]["error"] = "Job cancelled by user"
+                    else:
+                        JOBS[job_id]["status"] = "completed"
+                        JOBS[job_id]["percent"] = 100
+                        JOBS[job_id]["result"] = res
+                        JOBS[job_id]["step"] = "Completed"
+        except JobCancelledError:
+            with STATE_LOCK:
+                if job_id in JOBS:
+                    JOBS[job_id]["status"] = "cancelled"
+                    JOBS[job_id]["step"] = "Cancelled"
+                    JOBS[job_id]["error"] = "Job cancelled by user"
+        except Exception as e:
+            with STATE_LOCK:
+                if job_id in JOBS:
+                    if cancel_event.is_set():
+                        JOBS[job_id]["status"] = "cancelled"
+                        JOBS[job_id]["step"] = "Cancelled"
+                        JOBS[job_id]["error"] = "Job cancelled by user"
+                    else:
+                        JOBS[job_id]["status"] = "error"
+                        JOBS[job_id]["error"] = str(e)
+                        JOBS[job_id]["step"] = f"Error: {e}"
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    return job_data
+
 
 def save_session_state():
     with STATE_LOCK:
@@ -600,40 +696,59 @@ def api_probe_stream(req: ProbeStreamReq):
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
+def _do_load_stream_range(req: LoadStreamRangeReq, cancel_event: Optional[threading.Event] = None, progress_cb: Optional[Callable] = None):
+    from backend.stream_loader import download_stream_slice
+    CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 5, "step": "Connecting to stream..."}
+    if progress_cb:
+        progress_cb(5, "Connecting to stream...")
+    def cb(pct, msg):
+        CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": pct, "step": msg}
+        if progress_cb:
+            progress_cb(pct, msg)
+        
+    res = download_stream_slice(
+        url=req.url,
+        start_sec=req.start_sec,
+        end_sec=req.end_sec,
+        output_dir=UPLOADS_DIR,
+        custom_title=req.title,
+        quality=req.quality or "max",
+        progress_callback=cb,
+        cancel_event=cancel_event
+    )
+    CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": "Loaded slice into studio!"}
+    if progress_cb:
+        progress_cb(100, "Loaded slice into studio!")
+    # Immediately activate into studio
+    video_meta = process_loaded_video(res["file_path"], is_demo=False)
+    # Pre-seed clip #1 with the candidate's actual title and full duration
+    cand_title = req.title or res.get("title") or f"Highlight ({res['duration']}s)"
+    CURRENT_STATE["clips"] = [{
+        "id": "clip-full",
+        "title": cand_title,
+        "start": 0.0,
+        "end": res["duration"],
+        "duration": res["duration"],
+        "virality_score": 98,
+        "category": "Stream Highlight",
+        "reason": "Peak reaction from audio scan"
+    }]
+    save_session_state()
+    return {"status": "success", "slice": res, "video": video_meta, "clips": CURRENT_STATE["clips"]}
+
 @app.post("/api/load_stream_range")
-def api_load_stream_range(req: LoadStreamRangeReq):
+def api_load_stream_range(req: LoadStreamRangeReq, async_mode: bool = False):
+    if async_mode:
+        def worker(job_id, cancel_event, update_prog):
+            return _do_load_stream_range(req, cancel_event=cancel_event, progress_cb=update_prog)
+        job = start_background_job("load_stream_range", worker)
+        return {"status": "queued", "job_id": job["job_id"], "job": job}
+
     try:
-        from backend.stream_loader import download_stream_slice
-        CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 5, "step": "Connecting to stream..."}
-        def cb(pct, msg):
-            CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": pct, "step": msg}
-            
-        res = download_stream_slice(
-            url=req.url,
-            start_sec=req.start_sec,
-            end_sec=req.end_sec,
-            output_dir=UPLOADS_DIR,
-            custom_title=req.title,
-            quality=req.quality or "max",
-            progress_callback=cb
-        )
-        CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": "Loaded slice into studio!"}
-        # Immediately activate into studio
-        video_meta = process_loaded_video(res["file_path"], is_demo=False)
-        # Pre-seed clip #1 with the candidate's actual title and full duration
-        cand_title = req.title or res.get("title") or f"Highlight ({res['duration']}s)"
-        CURRENT_STATE["clips"] = [{
-            "id": "clip-full",
-            "title": cand_title,
-            "start": 0.0,
-            "end": res["duration"],
-            "duration": res["duration"],
-            "virality_score": 98,
-            "category": "Stream Highlight",
-            "reason": "Peak reaction from audio scan"
-        }]
-        save_session_state()
-        return {"status": "success", "slice": res, "video": video_meta, "clips": CURRENT_STATE["clips"]}
+        return _do_load_stream_range(req)
+    except JobCancelledError:
+        CURRENT_STATE["stream_progress"] = {"status": "cancelled", "percent": 0, "step": "Cancelled by user"}
+        raise HTTPException(status_code=499, detail="Stream slice download cancelled by user")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -644,8 +759,295 @@ def api_load_stream_range(req: LoadStreamRangeReq):
 def api_stream_progress():
     return CURRENT_STATE.get("stream_progress", {"status": "idle", "percent": 0, "step": "Ready"})
 
+@app.get("/api/jobs/{job_id}")
+def get_job_status(job_id: str):
+    with STATE_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        data = dict(job)
+        if data.get("status") == "running":
+            data["elapsed_sec"] = round(time.time() - data.get("started_at", time.time()), 1)
+        return data
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    with STATE_LOCK:
+        if job_id in JOB_CANCEL_EVENTS:
+            JOB_CANCEL_EVENTS[job_id].set()
+        if job_id in JOBS:
+            if JOBS[job_id].get("status") == "running":
+                JOBS[job_id]["step"] = "Cancelling..."
+            return {"status": "cancelling", "job_id": job_id}
+        raise HTTPException(status_code=404, detail="Job not found")
+
+@app.post("/api/jobs/cancel_active")
+def cancel_active_jobs():
+    with STATE_LOCK:
+        cancelled_ids = []
+        for jid, evt in JOB_CANCEL_EVENTS.items():
+            if jid in JOBS and JOBS[jid].get("status") == "running":
+                evt.set()
+                JOBS[jid]["step"] = "Cancelling..."
+                cancelled_ids.append(jid)
+        return {"status": "ok", "cancelled_jobs": cancelled_ids}
+
+def _do_scan_stream_audio(req: ProbeStreamReq, cancel_event: Optional[threading.Event] = None, progress_cb: Optional[Callable] = None):
+    from backend.stream_loader import (
+        probe_stream, download_stream_audio, scan_audio_energy_peaks,
+        hunt_stream_viral_moments, transcribe_audio_peaks,
+        fetch_stream_transcript, extract_heatmap_peaks, _PROBED_INFO_CACHE,
+        zoom_window_in_bucket, scan_transcript_story_bursts, build_comment_spike_windows
+    )
+    from backend.llm_engine import curate_story_clips_from_windows, curate_tournament_top_clips
+
+    def set_p(status: str, pct: int, step: str):
+        CURRENT_STATE["stream_progress"] = {"status": status, "percent": pct, "step": step}
+        if progress_cb:
+            progress_cb(pct, step)
+
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Scan stream audio cancelled by user")
+
+    set_p("processing", 10, "Probing stream metadata & audience signals...")
+    meta = probe_stream(req.url)
+    dur = meta.get("duration", 0)
+    cached_info = _PROBED_INFO_CACHE.get(req.url) or {}
+
+    # FAST PATH: Check if native transcript and multi-signal funnel are available
+    transcript_segs = fetch_stream_transcript(cached_info)
+    effective_dur = max(float(dur or 0.0), float(transcript_segs[-1].get("end", 0.0)) if transcript_segs else 0.0)
+
+    if transcript_segs:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Scan stream audio cancelled by user")
+
+        set_p("processing", 25, f"Harvesting 3-signal funnel (Heatmap, Chat Spikes, Story Bursts) across {int(effective_dur//60)}m stream...")
+
+        heatmap_peaks = extract_heatmap_peaks(cached_info, duration=effective_dur, top_k=20)
+        comment_peaks = build_comment_spike_windows(req.url, duration=effective_dur, top_k=12)
+        burst_peaks = scan_transcript_story_bursts(transcript_segs, video_duration=effective_dur, top_k=14)
+
+        all_candidates = []
+        for p in heatmap_peaks:
+            all_candidates.append(dict(p))
+        for p in comment_peaks:
+            all_candidates.append(dict(p))
+        for p in burst_peaks:
+            all_candidates.append(dict(p))
+
+        # Chapters fallback if fewer than 8 candidates
+        if len(all_candidates) < 8 and meta.get("chapters"):
+            for ch_idx, ch in enumerate(meta["chapters"][:8], 1):
+                ch_c = (ch["start"] + ch["end"]) / 2.0
+                all_candidates.append({
+                    "rank": ch_idx,
+                    "center_sec": round(ch_c, 1),
+                    "start": ch["start"],
+                    "end": ch["end"],
+                    "virality_score": 88,
+                    "source": "chapter"
+                })
+
+        # Merge and deduplicate candidates within 75s of each other
+        all_candidates.sort(key=lambda x: float(x.get("virality_score", 80)), reverse=True)
+        merged_peaks = []
+        for cand in all_candidates:
+            c_time = float(cand.get("center_sec", 0.0))
+            matched = False
+            for m in merged_peaks:
+                if abs(c_time - float(m.get("center_sec", 0.0))) <= 75.0:
+                    matched = True
+                    cur_score = int(m.get("virality_score", 85))
+                    m["virality_score"] = min(99, cur_score + 6)
+                    m["source"] = "multi_signal"
+                    if "bucket_start" in cand and "bucket_start" not in m:
+                        m["bucket_start"] = cand["bucket_start"]
+                        m["bucket_end"] = cand.get("bucket_end")
+                    break
+            if not matched:
+                merged_peaks.append(dict(cand))
+
+        merged_peaks.sort(key=lambda x: int(x.get("virality_score", 80)), reverse=True)
+        top_peaks = merged_peaks[:24]
+
+        if top_peaks:
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Scan stream audio cancelled by user")
+
+            set_p("processing", 45, f"Identified {len(top_peaks)} high-virality multi-signal windows! Running 2-Round Qwen3 Story Tournament...")
+
+            windows = []
+            for w_idx, p in enumerate(top_peaks, 1):
+                p_center = float(p.get("center_sec", 0.0))
+                b_st = p.get("bucket_start")
+                b_en = p.get("bucket_end")
+                if b_st is not None and b_en is not None:
+                    z_center, w_start, w_end = zoom_window_in_bucket(
+                        transcript_segs,
+                        bucket_start=float(b_st),
+                        bucket_end=float(b_en),
+                        fallback_center=p_center,
+                        video_duration=effective_dur,
+                        window_span=90.0
+                    )
+                else:
+                    z_center = p_center
+                    w_start = max(0.0, round(p_center - 40.0, 1))
+                    w_end = min(effective_dur, round(p_center + 50.0, 1))
+
+                matching = [
+                    s for s in transcript_segs
+                    if float(s.get("end", 0.0)) >= w_start and float(s.get("start", 0.0)) <= w_end
+                ]
+                t_lines = []
+                char_count = 0
+                for s in matching[:18]:
+                    txt = s.get("text", "").strip()
+                    if txt:
+                        line_str = f"[{float(s.get('start', 0.0)):.1f}s] {txt}"
+                        if char_count + len(line_str) > 750:
+                            break
+                        t_lines.append(line_str)
+                        char_count += len(line_str)
+
+                spoken_text = " ".join(s.get("text", "").strip() for s in matching)
+
+                windows.append({
+                    "window_id": w_idx,
+                    "source": p.get("source", "heatmap"),
+                    "peak_score": int(p.get("virality_score", 90)),
+                    "center_sec": round(z_center, 1),
+                    "start_bound": w_start,
+                    "end_bound": w_end,
+                    "transcript_lines": t_lines,
+                    "spoken_text": spoken_text[:800],
+                    "orig_cand": p
+                })
+
+            def t_progress(msg, pct):
+                set_p("processing", pct, msg)
+
+            curated_clips, curation_reason = curate_tournament_top_clips(
+                windows=windows,
+                video_duration=effective_dur,
+                target_count=8,
+                min_duration=15.0,
+                max_duration=50.0,
+                progress_callback=t_progress,
+                cancel_event=cancel_event
+            )
+
+            if curated_clips:
+                CURRENT_STATE["peak_transcriptions"] = {
+                    str(round(c.get("start", 0), 1)): c.get("title", "")
+                    for c in curated_clips
+                }
+                set_p("completed", 100, f"Tournament Champion Pass selected {len(curated_clips)} viral stories with Qwen3 (Zero Download)!")
+                return {
+                    "status": "success",
+                    "meta": meta,
+                    "viral_candidates": curated_clips,
+                    "audio_size_mb": 0,
+                    "mode": "story_first_zero_download"
+                }
+
+    # FALLBACK PATH: Download lightweight compressed audio for Kick/Twitch/no-caption VODs
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Scan stream audio cancelled by user")
+
+    set_p("downloading", 20, "Pulling audio channel for acoustic analysis...")
+    def cb_audio(pct, msg):
+        set_p("downloading", pct, msg)
+
+    audio_res = download_stream_audio(req.url, output_dir=TEMP_DIR, progress_callback=cb_audio, cancel_event=cancel_event)
+    audio_file_path = audio_res.get("audio_path")
+
+    try:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Scan stream audio cancelled by user")
+
+        set_p("processing", 65, "Scanning acoustic excitement & energy peaks across full stream...")
+        top_k_audio = 14 if effective_dur > 10800 else 10
+        peaks = scan_audio_energy_peaks(audio_file_path, duration=effective_dur, top_k=top_k_audio)
+
+        if peaks:
+            n_peaks = len(peaks)
+            set_p("processing", 75, f"Transcribing {n_peaks} peak moments with Whisper for real context...")
+            try:
+                peaks = transcribe_audio_peaks(audio_file_path, peaks, progress_callback=cb_audio, cancel_event=cancel_event)
+            except Exception as trans_err:
+                print(f"[WARN] Peak transcription failed, using energy-only titles: {trans_err}")
+
+        # Convert transcribed peaks into candidate windows for tournament curation
+        audio_windows = []
+        if peaks:
+            for p_idx, p in enumerate(peaks, 1):
+                p_c = float(p.get("center_sec") or (float(p.get("start", 0)) + float(p.get("end", 30))) / 2.0)
+                w_s = max(0.0, p_c - 30.0)
+                w_e = min(effective_dur, p_c + 35.0)
+                lines = p.get("transcript_lines") or []
+                if not lines and p.get("spoken_text"):
+                    lines = [f"[{p_c:.1f}s] {p.get('spoken_text')}"]
+                audio_windows.append({
+                    "window_id": p_idx,
+                    "source": p.get("reaction_category", "Audio Surge"),
+                    "peak_score": int(p.get("virality_score", 88)),
+                    "center_sec": p_c,
+                    "start_bound": w_s,
+                    "end_bound": w_e,
+                    "transcript_lines": lines,
+                    "spoken_text": p.get("spoken_text", ""),
+                    "orig_cand": p
+                })
+
+        moments = []
+        if audio_windows:
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Scan stream audio cancelled by user")
+
+            set_p("processing", 88, "Running 2-Round Qwen3 Story Tournament on audio peaks...")
+            curated_audio, c_reason = curate_tournament_top_clips(
+                windows=audio_windows,
+                video_duration=effective_dur,
+                target_count=8,
+                min_duration=15.0,
+                max_duration=50.0,
+                progress_callback=cb_audio,
+                cancel_event=cancel_event
+            )
+            if curated_audio:
+                moments = curated_audio
+
+        if not moments:
+            set_p("processing", 95, "Combining chat signals & chapter markers...")
+            moments = hunt_stream_viral_moments(req.url, effective_dur, meta=meta, audio_peaks=peaks)
+            if not isinstance(moments, list):
+                moments = []
+
+        # Store peak transcriptions in state so slice loading can reuse them
+        CURRENT_STATE["peak_transcriptions"] = {
+            str(round(p.get("start", 0), 1)): p.get("spoken_text", "")
+            for p in (peaks or []) if p.get("has_transcript")
+        }
+
+        set_p("completed", 100, f"Found {len(moments)} viral moments with real dialogue context!")
+        return {
+            "status": "success",
+            "meta": meta,
+            "viral_candidates": moments,
+            "audio_size_mb": audio_res.get("size_mb", 0),
+            "mode": "audio_first_synergy"
+        }
+    finally:
+        if audio_file_path and os.path.exists(audio_file_path):
+            try:
+                os.remove(audio_file_path)
+            except Exception as clean_err:
+                print(f"[WARN] Failed to delete temp scan audio: {clean_err}")
+
 @app.post("/api/scan_stream_audio")
-def api_scan_stream_audio(req: ProbeStreamReq):
+def api_scan_stream_audio(req: ProbeStreamReq, async_mode: bool = False):
     """
     STORY-FIRST STREAM DISCOVERY PIPELINE (OpusClip / Klap Architecture):
     1. Zero-Download Fast Path: Probes stream metadata and extracts native YouTube heatmap + subtitles.
@@ -653,252 +1055,19 @@ def api_scan_stream_audio(req: ProbeStreamReq):
     2. Fallback Synergy Path (for Kick/Twitch or videos without native captions):
        Downloads lightweight compressed audio (~25-40MB), scans acoustic excitement peaks,
        transcribes peak regions with Whisper, and curates via Qwen3 Story Mind.
+    Supports ?async_mode=1 for background non-blocking execution with live cancellation.
     """
+    if async_mode:
+        def worker(job_id, cancel_event, update_prog):
+            return _do_scan_stream_audio(req, cancel_event=cancel_event, progress_cb=update_prog)
+        job = start_background_job("scan_stream_audio", worker)
+        return {"status": "queued", "job_id": job["job_id"], "job": job}
+
     try:
-        from backend.stream_loader import (
-            probe_stream, download_stream_audio, scan_audio_energy_peaks,
-            hunt_stream_viral_moments, transcribe_audio_peaks,
-            fetch_stream_transcript, extract_heatmap_peaks, _PROBED_INFO_CACHE,
-            zoom_window_in_bucket, scan_transcript_story_bursts, build_comment_spike_windows
-        )
-        from backend.llm_engine import curate_story_clips_from_windows, curate_tournament_top_clips
-
-        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 10, "step": "Probing stream metadata & audience signals..."}
-        meta = probe_stream(req.url)
-        dur = meta.get("duration", 0)
-        cached_info = _PROBED_INFO_CACHE.get(req.url) or {}
-
-        # FAST PATH: Check if native transcript and multi-signal funnel are available
-        transcript_segs = fetch_stream_transcript(cached_info)
-        effective_dur = max(float(dur or 0.0), float(transcript_segs[-1].get("end", 0.0)) if transcript_segs else 0.0)
-
-        if transcript_segs:
-            CURRENT_STATE["stream_progress"] = {
-                "status": "processing",
-                "percent": 25,
-                "step": f"Harvesting 3-signal funnel (Heatmap, Chat Spikes, Story Bursts) across {int(effective_dur//60)}m stream..."
-            }
-
-            heatmap_peaks = extract_heatmap_peaks(cached_info, duration=effective_dur, top_k=20)
-            comment_peaks = build_comment_spike_windows(req.url, duration=effective_dur, top_k=12)
-            burst_peaks = scan_transcript_story_bursts(transcript_segs, video_duration=effective_dur, top_k=14)
-
-            all_candidates = []
-            for p in heatmap_peaks:
-                all_candidates.append(dict(p))
-            for p in comment_peaks:
-                all_candidates.append(dict(p))
-            for p in burst_peaks:
-                all_candidates.append(dict(p))
-
-            # Chapters fallback if fewer than 8 candidates
-            if len(all_candidates) < 8 and meta.get("chapters"):
-                for ch_idx, ch in enumerate(meta["chapters"][:8], 1):
-                    ch_c = (ch["start"] + ch["end"]) / 2.0
-                    all_candidates.append({
-                        "rank": ch_idx,
-                        "center_sec": round(ch_c, 1),
-                        "start": ch["start"],
-                        "end": ch["end"],
-                        "virality_score": 88,
-                        "source": "chapter"
-                    })
-
-            # Merge and deduplicate candidates within 75s of each other
-            # When 2+ independent signals agree on the same moment, boost peak_score by +6 (capped at 99) and label source as "multi_signal"
-            all_candidates.sort(key=lambda x: float(x.get("virality_score", 80)), reverse=True)
-            merged_peaks = []
-            for cand in all_candidates:
-                c_time = float(cand.get("center_sec", 0.0))
-                matched = False
-                for m in merged_peaks:
-                    if abs(c_time - float(m.get("center_sec", 0.0))) <= 75.0:
-                        matched = True
-                        cur_score = int(m.get("virality_score", 85))
-                        m["virality_score"] = min(99, cur_score + 6)
-                        m["source"] = "multi_signal"
-                        if "bucket_start" in cand and "bucket_start" not in m:
-                            m["bucket_start"] = cand["bucket_start"]
-                            m["bucket_end"] = cand.get("bucket_end")
-                        break
-                if not matched:
-                    merged_peaks.append(dict(cand))
-
-            merged_peaks.sort(key=lambda x: int(x.get("virality_score", 80)), reverse=True)
-            top_peaks = merged_peaks[:24]
-
-            if top_peaks:
-                CURRENT_STATE["stream_progress"] = {
-                    "status": "processing",
-                    "percent": 45,
-                    "step": f"Identified {len(top_peaks)} high-virality multi-signal windows! Running 2-Round Qwen3 Story Tournament..."
-                }
-
-                windows = []
-                for w_idx, p in enumerate(top_peaks, 1):
-                    p_center = float(p.get("center_sec", 0.0))
-                    b_st = p.get("bucket_start")
-                    b_en = p.get("bucket_end")
-                    if b_st is not None and b_en is not None:
-                        z_center, w_start, w_end = zoom_window_in_bucket(
-                            transcript_segs,
-                            bucket_start=float(b_st),
-                            bucket_end=float(b_en),
-                            fallback_center=p_center,
-                            video_duration=effective_dur,
-                            window_span=90.0
-                        )
-                    else:
-                        z_center = p_center
-                        w_start = max(0.0, round(p_center - 40.0, 1))
-                        w_end = min(effective_dur, round(p_center + 50.0, 1))
-
-                    matching = [
-                        s for s in transcript_segs
-                        if float(s.get("end", 0.0)) >= w_start and float(s.get("start", 0.0)) <= w_end
-                    ]
-                    t_lines = []
-                    char_count = 0
-                    for s in matching[:18]:
-                        txt = s.get("text", "").strip()
-                        if txt:
-                            line_str = f"[{float(s.get('start', 0.0)):.1f}s] {txt}"
-                            if char_count + len(line_str) > 750:
-                                break
-                            t_lines.append(line_str)
-                            char_count += len(line_str)
-
-                    spoken_text = " ".join(s.get("text", "").strip() for s in matching)
-
-                    windows.append({
-                        "window_id": w_idx,
-                        "source": p.get("source", "heatmap"),
-                        "peak_score": int(p.get("virality_score", 90)),
-                        "center_sec": round(z_center, 1),
-                        "start_bound": w_start,
-                        "end_bound": w_end,
-                        "transcript_lines": t_lines,
-                        "spoken_text": spoken_text[:800],
-                        "orig_cand": p
-                    })
-
-                def t_progress(msg, pct):
-                    CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": pct, "step": msg}
-
-                curated_clips, curation_reason = curate_tournament_top_clips(
-                    windows=windows,
-                    video_duration=effective_dur,
-                    target_count=8,
-                    min_duration=15.0,
-                    max_duration=50.0,
-                    progress_callback=t_progress
-                )
-
-                if curated_clips:
-                    CURRENT_STATE["peak_transcriptions"] = {
-                        str(round(c.get("start", 0), 1)): c.get("title", "")
-                        for c in curated_clips
-                    }
-                    CURRENT_STATE["stream_progress"] = {
-                        "status": "completed",
-                        "percent": 100,
-                        "step": f"Tournament Champion Pass selected {len(curated_clips)} viral stories with Qwen3 (Zero Download)!"
-                    }
-                    return {
-                        "status": "success",
-                        "meta": meta,
-                        "viral_candidates": curated_clips,
-                        "audio_size_mb": 0,
-                        "mode": "story_first_zero_download"
-                    }
-
-        # FALLBACK PATH: Download lightweight compressed audio for Kick/Twitch/no-caption VODs
-        CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 20, "step": "Pulling audio channel for acoustic analysis..."}
-        def cb(pct, msg):
-            CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": pct, "step": msg}
-
-        audio_res = download_stream_audio(req.url, output_dir=TEMP_DIR, progress_callback=cb)
-        audio_file_path = audio_res.get("audio_path")
-
-        try:
-            CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 65, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
-            top_k_audio = 14 if effective_dur > 10800 else 10
-            peaks = scan_audio_energy_peaks(audio_file_path, duration=effective_dur, top_k=top_k_audio)
-
-            if peaks:
-                n_peaks = len(peaks)
-                CURRENT_STATE["stream_progress"] = {
-                    "status": "processing",
-                    "percent": 75,
-                    "step": f"Transcribing {n_peaks} peak moments with Whisper for real context..."
-                }
-                try:
-                    peaks = transcribe_audio_peaks(audio_file_path, peaks, progress_callback=cb)
-                except Exception as trans_err:
-                    print(f"[WARN] Peak transcription failed, using energy-only titles: {trans_err}")
-
-            # Convert transcribed peaks into candidate windows for tournament curation
-            audio_windows = []
-            if peaks:
-                for p_idx, p in enumerate(peaks, 1):
-                    p_c = float(p.get("center_sec") or (float(p.get("start", 0)) + float(p.get("end", 30))) / 2.0)
-                    w_s = max(0.0, p_c - 30.0)
-                    w_e = min(effective_dur, p_c + 35.0)
-                    lines = p.get("transcript_lines") or []
-                    if not lines and p.get("spoken_text"):
-                        lines = [f"[{p_c:.1f}s] {p.get('spoken_text')}"]
-                    audio_windows.append({
-                        "window_id": p_idx,
-                        "source": p.get("reaction_category", "Audio Surge"),
-                        "peak_score": int(p.get("virality_score", 88)),
-                        "center_sec": p_c,
-                        "start_bound": w_s,
-                        "end_bound": w_e,
-                        "transcript_lines": lines,
-                        "spoken_text": p.get("spoken_text", ""),
-                        "orig_cand": p
-                    })
-
-            moments = []
-            if audio_windows:
-                CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 88, "step": "Running 2-Round Qwen3 Story Tournament on audio peaks..."}
-                curated_audio, c_reason = curate_tournament_top_clips(
-                    windows=audio_windows,
-                    video_duration=effective_dur,
-                    target_count=8,
-                    min_duration=15.0,
-                    max_duration=50.0,
-                    progress_callback=cb
-                )
-                if curated_audio:
-                    moments = curated_audio
-
-            if not moments:
-                CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 95, "step": "Combining chat signals & chapter markers..."}
-                moments = hunt_stream_viral_moments(req.url, effective_dur, meta=meta, audio_peaks=peaks)
-                if not isinstance(moments, list):
-                    moments = []
-
-            # Store peak transcriptions in state so slice loading can reuse them
-            CURRENT_STATE["peak_transcriptions"] = {
-                str(round(p.get("start", 0), 1)): p.get("spoken_text", "")
-                for p in (peaks or []) if p.get("has_transcript")
-            }
-
-            CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": f"Found {len(moments)} viral moments with real dialogue context!"}
-            return {
-                "status": "success",
-                "meta": meta,
-                "viral_candidates": moments,
-                "audio_size_mb": audio_res.get("size_mb", 0),
-                "mode": "audio_first_synergy"
-            }
-        finally:
-            if audio_file_path and os.path.exists(audio_file_path):
-                try:
-                    os.remove(audio_file_path)
-                except Exception as clean_err:
-                    print(f"[WARN] Failed to delete temp scan audio: {clean_err}")
+        return _do_scan_stream_audio(req)
+    except JobCancelledError:
+        CURRENT_STATE["stream_progress"] = {"status": "cancelled", "percent": 0, "step": "Cancelled by user"}
+        raise HTTPException(status_code=499, detail="Scan stream audio cancelled by user")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1080,12 +1249,14 @@ def get_probe():
         CURRENT_STATE["video_meta"] = probe_video(CURRENT_STATE["video_path"])
     return CURRENT_STATE["video_meta"]
 
-@app.post("/api/transcribe")
-def run_transcription(req: TranscribeReq):
+def _do_transcribe(req: TranscribeReq, cancel_event: Optional[threading.Event] = None, progress_cb: Optional[Callable] = None):
     video_path = CURRENT_STATE["video_path"]
     if not video_path or not os.path.exists(video_path):
         raise HTTPException(status_code=400, detail="No video file loaded. Please upload or load a video first.")
     
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Transcription cancelled by user")
+
     # Only load demo subtitles if user explicitly selected demo mode
     if req.is_demo and os.path.exists(DEFAULT_SUBS_FILE):
         try:
@@ -1093,11 +1264,14 @@ def run_transcription(req: TranscribeReq):
                 cached = json.load(f)
             if cached and len(cached) > 0:
                 CURRENT_STATE["subtitles"] = cached
+                msg = f"Instant Demo Sync: {len(cached)} synchronized lines loaded in 0.05s!"
                 CURRENT_STATE["transcribe_progress"] = {
                     "status": "completed", 
-                    "step": f"Instant Demo Sync: {len(cached)} synchronized lines loaded in 0.05s!", 
+                    "step": msg, 
                     "percent": 100
                 }
+                if progress_cb:
+                    progress_cb(100, msg)
                 return {"status": "success", "count": len(cached), "subtitles": cached}
         except Exception:
             pass
@@ -1115,16 +1289,21 @@ def run_transcription(req: TranscribeReq):
             "total_clips": 1,
             "clip_title": "Full Video" if req.start_time is None else f"Clip ({round(req.start_time, 1)}s)"
         }
+        if progress_cb:
+            progress_cb(sub_percent, step_desc)
 
+    init_step = "Extracting 16kHz audio & applying speech normalization..."
     CURRENT_STATE["transcribe_progress"] = {
         "status": "running",
-        "step": "Extracting 16kHz audio & applying speech normalization...",
+        "step": init_step,
         "percent": 15,
         "elapsed_sec": 0.0,
         "current_clip": 1,
         "total_clips": 1,
         "clip_title": "Active Target"
     }
+    if progress_cb:
+        progress_cb(15, init_step)
     
     try:
         # Pick model if specified
@@ -1158,16 +1337,21 @@ def run_transcription(req: TranscribeReq):
             duration=req_dur,
             streamer_voice_focus=req.streamer_voice_focus,
             audio_track=req.audio_track if req.audio_track is not None else 0,
-            progress_callback=on_single_transcribe_progress
+            progress_callback=on_single_transcribe_progress,
+            cancel_event=cancel_event
         )
+
+        align_step = "Aligning word-by-word karaoke timestamps..."
         CURRENT_STATE["transcribe_progress"] = {
             "status": "running", 
-            "step": "Aligning word-by-word karaoke timestamps...", 
+            "step": align_step, 
             "percent": 95,
             "elapsed_sec": round(time.time() - t0_single, 1),
             "current_clip": 1,
             "total_clips": 1
         }
+        if progress_cb:
+            progress_cb(95, align_step)
         
         if req_start is not None and req_dur is not None:
             # Shift transcribed clip timestamps to match the master stream timeline
@@ -1200,17 +1384,39 @@ def run_transcription(req: TranscribeReq):
             CURRENT_STATE["subtitles"] = subtitles
 
         save_session_state()
-        CURRENT_STATE["transcribe_progress"] = {"status": "completed", "step": f"Transcription complete! ({len(subtitles)} lines generated for uploaded footage)", "percent": 100}
+        done_step = f"Transcription complete! ({len(subtitles)} lines generated for uploaded footage)"
+        CURRENT_STATE["transcribe_progress"] = {"status": "completed", "step": done_step, "percent": 100}
+        if progress_cb:
+            progress_cb(100, done_step)
         return {"status": "success", "count": len(subtitles), "subtitles": CURRENT_STATE["subtitles"]}
+    except JobCancelledError:
+        CURRENT_STATE["transcribe_progress"] = {"status": "cancelled", "step": "Transcription cancelled by user", "percent": 0}
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
         CURRENT_STATE["transcribe_progress"] = {"status": "completed", "step": "Transcription completed (silence or non-speech)", "percent": 100}
+        if progress_cb:
+            progress_cb(100, "Transcription completed (silence or non-speech)")
         return {"status": "success", "count": 0, "subtitles": CURRENT_STATE.get("subtitles", []), "warning": str(e)}
 
-@app.post("/api/transcribe_all_clips")
-def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
+@app.post("/api/transcribe")
+def run_transcription(req: TranscribeReq, async_mode: bool = False):
+    if async_mode:
+        def worker(job_id, cancel_event, update_prog):
+            return _do_transcribe(req, cancel_event=cancel_event, progress_cb=update_prog)
+        job = start_background_job("transcribe", worker)
+        return {"status": "queued", "job_id": job["job_id"], "job": job}
+
+    try:
+        return _do_transcribe(req)
+    except JobCancelledError:
+        raise HTTPException(status_code=499, detail="Transcription cancelled by user")
+
+def _do_transcribe_all_clips(req: TranscribeAllClipsReq, cancel_event: Optional[threading.Event] = None, progress_cb: Optional[Callable] = None):
     video_path = CURRENT_STATE["video_path"]
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Batch transcription cancelled by user")
     if not video_path or not os.path.exists(video_path):
         raise HTTPException(status_code=400, detail="No video file loaded. Please upload or load a video first.")
 
@@ -1228,6 +1434,8 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
         "total_clips": total_clips,
         "clip_title": req.clips[0].title if req.clips else "Clip 1"
     }
+    if progress_cb:
+        progress_cb(5, CURRENT_STATE["transcribe_progress"]["step"])
 
     chosen_model = None
     if req.model_name:
@@ -1246,6 +1454,8 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
     v_dur = float(v_meta.get("duration", 0.0))
 
     for idx, c in enumerate(req.clips):
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Batch transcription cancelled by user")
         c_start = float(c.start)
         c_end = float(c.end)
         c_dur = round(c_end - c_start, 2)
@@ -1265,9 +1475,10 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
             def cb(step_desc: str, sub_pct: int):
                 overall_pct = int(min(97, b_pct + (sub_pct / 100.0) * c_span))
                 elapsed = round(time.time() - start_batch_t0, 1)
+                step_text = f"Clip {clip_idx + 1}/{total_clips} ({clip_title}): {step_desc}"
                 CURRENT_STATE["transcribe_progress"] = {
                     "status": "running",
-                    "step": f"Clip {clip_idx + 1}/{total_clips} ({clip_title}): {step_desc}",
+                    "step": step_text,
                     "percent": overall_pct,
                     "elapsed_sec": elapsed,
                     "current_clip": clip_idx + 1,
@@ -1275,6 +1486,8 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
                     "clip_title": clip_title,
                     "sub_percent": sub_pct
                 }
+                if progress_cb:
+                    progress_cb(overall_pct, step_text)
             return cb
 
         clip_cb = make_clip_cb(idx, c.title, c_dur, base_pct, clip_span)
@@ -1291,7 +1504,8 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
                 duration=c_dur,
                 streamer_voice_focus=req.streamer_voice_focus if req.streamer_voice_focus is not None else True,
                 audio_track=req.audio_track or 0,
-                progress_callback=clip_cb
+                progress_callback=clip_cb,
+                cancel_event=cancel_event
             )
 
             # Shift timestamps to match master timeline
@@ -1321,6 +1535,8 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
                 if s.get("end", 0) <= c_start or s.get("start", 0) >= c_end
             ] + shifted
 
+        except JobCancelledError:
+            raise
         except Exception as e:
             print(f"Error transcribing clip {c.id}: {e}")
             c_dict["subtitles"] = []
@@ -1333,15 +1549,18 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
     save_session_state()
 
     elapsed_total = round(time.time() - start_batch_t0, 1)
+    done_msg = f"✓ 100% Synchronized: All {total_clips} clips transcribed ({len(accumulated_subs)} lines in {elapsed_total}s)!"
     CURRENT_STATE["transcribe_progress"] = {
         "status": "completed",
-        "step": f"✓ 100% Synchronized: All {total_clips} clips transcribed ({len(accumulated_subs)} lines in {elapsed_total}s)!",
+        "step": done_msg,
         "percent": 100,
         "elapsed_sec": elapsed_total,
         "current_clip": total_clips,
         "total_clips": total_clips,
         "clip_title": "All Clips Synchronized"
     }
+    if progress_cb:
+        progress_cb(100, done_msg)
 
     return {
         "status": "success",
@@ -1349,6 +1568,19 @@ def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq):
         "subtitles": accumulated_subs,
         "total_lines": len(accumulated_subs)
     }
+
+@app.post("/api/transcribe_all_clips")
+def transcribe_all_clips_endpoint(req: TranscribeAllClipsReq, async_mode: bool = False):
+    if async_mode:
+        def worker(job_id, cancel_event, update_prog):
+            return _do_transcribe_all_clips(req, cancel_event=cancel_event, progress_cb=update_prog)
+        job = start_background_job("transcribe_all_clips", worker)
+        return {"status": "queued", "job_id": job["job_id"], "job": job}
+
+    try:
+        return _do_transcribe_all_clips(req)
+    except JobCancelledError:
+        raise HTTPException(status_code=499, detail="Batch transcription cancelled by user")
 
 @app.post("/api/regroup_subtitles")
 def regroup_current_subtitles(req: RegroupReq):
@@ -1431,43 +1663,55 @@ def serve_temp(filename: str):
         return FileResponse(resolved)
     raise HTTPException(status_code=404, detail="File not found")
 
-@app.post("/api/export_clip")
-def export_single_clip(
+def _do_export_single_clip(
     clip: ClipDef,
     template_config: Dict[str, Any],
     subtitle_config: Dict[str, Any],
     hook_config: Optional[Dict[str, Any]] = None,
     subtitles: Optional[List[Dict[str, Any]]] = None,
-    encoder: Optional[str] = None
+    encoder: Optional[str] = None,
+    cancel_event: Optional[threading.Event] = None,
+    progress_cb: Optional[Callable] = None
 ):
     video_path = CURRENT_STATE["video_path"]
     if not video_path or not os.path.exists(video_path):
         raise HTTPException(status_code=400, detail="No video loaded")
+
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Export cancelled by user")
         
     subs_to_use = subtitles if subtitles is not None else CURRENT_STATE["subtitles"]
+    init_title = f"Preparing render: {clip.title}..."
     CURRENT_STATE["export_progress"] = {
         "status": "rendering",
         "current_clip": 1,
         "total_clips": 1,
         "percent": 5,
-        "title": f"Preparing render: {clip.title}...",
+        "title": init_title,
         "cur_sec": 0.0,
         "duration": 0.0,
         "speed": "1.0x",
         "frame": 0
     }
+    if progress_cb:
+        progress_cb(5, init_title)
+
     def progress_callback(pct, cur_sec, dur, speed, frame):
+        prog_title = f"Rendering {clip.title}: {pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})"
         CURRENT_STATE["export_progress"] = {
             "status": "rendering",
             "current_clip": 1,
             "total_clips": 1,
             "percent": pct,
-            "title": f"Rendering {clip.title}: {pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})",
+            "title": prog_title,
             "cur_sec": round(cur_sec, 1),
             "duration": round(dur, 1),
             "speed": speed,
             "frame": frame
         }
+        if progress_cb:
+            progress_cb(pct, prog_title)
+
     try:
         # Always merge request template_config so current active UI settings (divider, resolution, bitrate) are applied
         tmpl_to_use = dict(template_config or {})
@@ -1497,7 +1741,8 @@ def export_single_clip(
             encoder=encoder,
             progress_callback=progress_callback,
             video_meta=video_meta,
-            workers_count=1
+            workers_count=1,
+            cancel_event=cancel_event
         )
         CURRENT_STATE["export_progress"] = {
             "status": "completed",
@@ -1506,7 +1751,18 @@ def export_single_clip(
             "percent": 100,
             "title": clip.title
         }
+        if progress_cb:
+            progress_cb(100, f"Rendered {clip.title}")
         return {"status": "success", "clip": res}
+    except JobCancelledError:
+        CURRENT_STATE["export_progress"] = {
+            "status": "cancelled",
+            "current_clip": 1,
+            "total_clips": 1,
+            "percent": 0,
+            "title": "Cancelled"
+        }
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1523,11 +1779,50 @@ def export_single_clip(
             err_detail = raw_err.strip() or err_detail
         raise HTTPException(status_code=500, detail=f"Export failed: {err_detail}")
 
-@app.post("/api/export_all")
-def export_all_clips(req: ExportReq):
+@app.post("/api/export_clip")
+def export_single_clip(
+    clip: ClipDef,
+    template_config: Dict[str, Any],
+    subtitle_config: Dict[str, Any],
+    hook_config: Optional[Dict[str, Any]] = None,
+    subtitles: Optional[List[Dict[str, Any]]] = None,
+    encoder: Optional[str] = None,
+    async_mode: bool = False
+):
+    if async_mode:
+        def worker(job_id, cancel_event, update_prog):
+            return _do_export_single_clip(
+                clip=clip,
+                template_config=template_config,
+                subtitle_config=subtitle_config,
+                hook_config=hook_config,
+                subtitles=subtitles,
+                encoder=encoder,
+                cancel_event=cancel_event,
+                progress_cb=update_prog
+            )
+        job = start_background_job("export_clip", worker)
+        return {"status": "queued", "job_id": job["job_id"], "job": job}
+
+    try:
+        return _do_export_single_clip(
+            clip=clip,
+            template_config=template_config,
+            subtitle_config=subtitle_config,
+            hook_config=hook_config,
+            subtitles=subtitles,
+            encoder=encoder
+        )
+    except JobCancelledError:
+        raise HTTPException(status_code=499, detail="Export cancelled by user")
+
+def _do_export_all_clips(req: ExportReq, cancel_event: Optional[threading.Event] = None, progress_cb: Optional[Callable] = None):
     video_path = CURRENT_STATE["video_path"]
     if not video_path or not os.path.exists(video_path):
         raise HTTPException(status_code=400, detail="No video loaded")
+
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Batch export cancelled by user")
         
     subs_to_use = req.subtitles if req.subtitles is not None else CURRENT_STATE["subtitles"]
     video_meta = CURRENT_STATE.get("video_meta")
@@ -1563,17 +1858,20 @@ def export_all_clips(req: ExportReq):
                 with progress_lock:
                     clip_pcts[c.id] = float(clip_pct)
                     overall_pct = int(sum(clip_pcts.values()) / max(1, total))
+                    prog_text = f"Rendering ({completed_count + 1}/{total}) {c.title}: {clip_pct}% ({speed})"
                     CURRENT_STATE["export_progress"] = {
                         "status": "rendering",
                         "current_clip": min(total, completed_count + 1),
                         "total_clips": total,
                         "percent": max(5, min(99, overall_pct)),
-                        "title": f"Rendering ({completed_count + 1}/{total}) {c.title}: {clip_pct}% ({speed})",
+                        "title": prog_text,
                         "cur_sec": round(cur_sec, 1),
                         "duration": round(dur, 1),
                         "speed": speed,
                         "frame": frame
                     }
+                    if progress_cb:
+                        progress_cb(max(5, min(99, overall_pct)), prog_text)
 
             tmpl_to_use = dict(req.template_config or {})
             if c.template_config and isinstance(c.template_config, dict):
@@ -1602,7 +1900,8 @@ def export_all_clips(req: ExportReq):
                 encoder=req.encoder,
                 progress_callback=batch_progress_cb,
                 video_meta=video_meta,
-                workers_count=max_workers
+                workers_count=max_workers,
+                cancel_event=cancel_event
             )
             with progress_lock:
                 completed_count += 1
@@ -1619,6 +1918,8 @@ def export_all_clips(req: ExportReq):
                 try:
                     res = fut.result()
                     results_ordered[idx] = res
+                except JobCancelledError:
+                    raise
                 except Exception as e:
                     errors.append({"clip_id": c.id, "error": str(e)})
 
@@ -1626,6 +1927,9 @@ def export_all_clips(req: ExportReq):
     else:
         # Serial Batch Export (Balanced/Eco Tiers)
         for idx, c in enumerate(req.clips):
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Batch export cancelled by user")
+
             CURRENT_STATE["export_progress"] = {
                 "status": "rendering",
                 "current_clip": idx + 1,
@@ -1635,19 +1939,26 @@ def export_all_clips(req: ExportReq):
                 "speed": "1.0x",
                 "frame": 0
             }
+            if progress_cb:
+                progress_cb(max(5, int((idx / total) * 100)), CURRENT_STATE["export_progress"]["title"])
+
             def batch_progress_callback(clip_pct, cur_sec, dur, speed, frame):
                 batch_pct = int(((idx + (clip_pct / 100.0)) / total) * 100)
+                prog_msg = f"Rendering ({idx+1}/{total}) {c.title}: {clip_pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})"
                 CURRENT_STATE["export_progress"] = {
                     "status": "rendering",
                     "current_clip": idx + 1,
                     "total_clips": total,
                     "percent": max(5, min(99, batch_pct)),
-                    "title": f"Rendering ({idx+1}/{total}) {c.title}: {clip_pct}% ({round(cur_sec, 1)}s / {round(dur, 1)}s • {speed})",
+                    "title": prog_msg,
                     "cur_sec": round(cur_sec, 1),
                     "duration": round(dur, 1),
                     "speed": speed,
                     "frame": frame
                 }
+                if progress_cb:
+                    progress_cb(max(5, min(99, batch_pct)), prog_msg)
+
             try:
                 # Always merge request template_config so current active UI settings (divider, resolution, bitrate) are applied
                 tmpl_to_use = dict(req.template_config or {})
@@ -1676,10 +1987,13 @@ def export_all_clips(req: ExportReq):
                     encoder=req.encoder,
                     progress_callback=batch_progress_callback,
                     video_meta=video_meta,
-                    workers_count=1
+                    workers_count=1,
+                    cancel_event=cancel_event
                 )
                 results.append(res)
                 CURRENT_STATE["export_progress"]["percent"] = int(((idx + 1) / total) * 100)
+            except JobCancelledError:
+                raise
             except Exception as e:
                 errors.append({"clip_id": c.id, "error": str(e)})
             
@@ -1707,14 +2021,31 @@ def export_all_clips(req: ExportReq):
         except Exception as ze:
             print(f"Batch ZIP creation error: {ze}")
 
+    final_title = f"Export complete! ({len(results)} clips rendered)" + (f" • ZIP ready ({zip_info['size_mb']} MB)" if zip_info else "")
     CURRENT_STATE["export_progress"] = {
         "status": "completed",
         "current_clip": total,
         "total_clips": total,
         "percent": 100,
-        "title": f"Export complete! ({len(results)} clips rendered)" + (f" • ZIP ready ({zip_info['size_mb']} MB)" if zip_info else "")
+        "title": final_title
     }
+    if progress_cb:
+        progress_cb(100, final_title)
+
     return {"status": "success", "exported": results, "errors": errors, "zip": zip_info}
+
+@app.post("/api/export_all")
+def export_all_clips(req: ExportReq, async_mode: bool = False):
+    if async_mode:
+        def worker(job_id, cancel_event, update_prog):
+            return _do_export_all_clips(req, cancel_event=cancel_event, progress_cb=update_prog)
+        job = start_background_job("export_all", worker)
+        return {"status": "queued", "job_id": job["job_id"], "job": job}
+
+    try:
+        return _do_export_all_clips(req)
+    except JobCancelledError:
+        raise HTTPException(status_code=499, detail="Batch export cancelled by user")
 
 @app.api_route("/media/video", methods=["GET", "HEAD"])
 async def serve_current_video(request: Request):

@@ -5,7 +5,9 @@ import json
 import time
 import subprocess
 import urllib.request
+import threading
 from typing import Dict, Any, List, Optional, Callable, Tuple
+from backend.transcriber import JobCancelledError
 
 # Ensure bin directory (with deno.exe, ffmpeg.exe, whisper-cli.exe) is first on PATH for yt-dlp runtime
 _BIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin"))
@@ -521,15 +523,20 @@ def download_stream_slice(
     output_dir: str,
     custom_title: Optional[str] = None,
     quality: str = "max",
-    progress_callback: Optional[Callable[[int, str], None]] = None
+    progress_callback: Optional[Callable[[int, str], None]] = None,
+    cancel_event: Optional[threading.Event] = None
 ) -> Dict[str, Any]:
     """
     Downloads only the requested time slice (start_sec to end_sec) directly
     from YouTube/Twitch/Kick into output_dir at MAXIMUM pristine quality
     (1080p60 / 1440p / 4K) using native H.264/AAC MP4 muxing with zero 360p fallback.
+    Supports thread-safe cancellation and clean progress streaming.
     """
     import uuid
     from backend.hardware import FFMPEG_BIN
+
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Stream download cancelled by user")
 
     url = url.strip()
     if end_sec <= start_sec:
@@ -564,12 +571,14 @@ def download_stream_slice(
     temp_template = os.path.join(output_dir, f"{session_id}_%(title)s.%(ext)s")
 
     def progress_hook(d):
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Stream download cancelled by user")
         if d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes") or 0
-            pct = 15
+            pct = 10
             if total > 0:
-                pct = min(90, max(15, int((downloaded / total) * 100)))
+                pct = min(92, max(10, int((downloaded / total) * 100)))
             if progress_callback:
                 progress_callback(pct, f"Streaming slice ({format_seconds_to_hms(start_sec)} to {format_seconds_to_hms(end_sec)})...")
         elif d.get("status") == "finished":
@@ -599,9 +608,21 @@ def download_stream_slice(
     apply_cookies_opt(ydl_opts)
 
     try:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Stream download cancelled by user")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
+    except JobCancelledError:
+        for f in os.listdir(output_dir):
+            if f.startswith(session_id):
+                try:
+                    os.remove(os.path.join(output_dir, f))
+                except Exception:
+                    pass
+        raise
     except Exception as e:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Stream download cancelled by user")
         raise RuntimeError(format_stream_error(e))
 
     # Find the newly downloaded file with our unique session prefix
@@ -685,16 +706,21 @@ def download_stream_audio(
     url: str,
     output_dir: str,
     custom_title: Optional[str] = None,
-    progress_callback: Optional[Callable[[int, str], None]] = None
+    progress_callback: Optional[Callable[[int, str], None]] = None,
+    cancel_event: Optional[threading.Event] = None
 ) -> Dict[str, Any]:
     """
     AUDIO-FIRST FAST STREAM INGESTION (OpusClip / Klap Architecture):
     Downloads ONLY the lightweight compressed audio track (~25-40 MB for a 3-hour stream)
     in 3 to 6 seconds, bypassing the heavy 6-10 GB video stream entirely.
     Allows instant AI scanning of viral screaming/laughter peaks across the full 3 hours.
+    Supports thread-safe cancellation and clean progress streaming.
     """
     import uuid
     from backend.hardware import FFMPEG_BIN
+
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Stream audio download cancelled by user")
 
     url = url.strip()
     os.makedirs(output_dir, exist_ok=True)
@@ -706,12 +732,14 @@ def download_stream_audio(
     temp_template = os.path.join(output_dir, f"{session_id}_%(title)s.%(ext)s")
 
     def progress_hook(d):
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Stream audio download cancelled by user")
         if d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes") or 0
-            pct = 20
+            pct = 10
             if total > 0:
-                pct = min(90, max(20, int((downloaded / total) * 100)))
+                pct = min(92, max(10, int((downloaded / total) * 100)))
             if progress_callback:
                 progress_callback(pct, f"Pulling lightweight audio stream ({downloaded / (1024*1024):.1f} MB)...")
         elif d.get("status") == "finished":
@@ -730,9 +758,21 @@ def download_stream_audio(
     apply_cookies_opt(ydl_opts)
 
     try:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Stream audio download cancelled by user")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
+    except JobCancelledError:
+        for f in os.listdir(output_dir):
+            if f.startswith(session_id):
+                try:
+                    os.remove(os.path.join(output_dir, f))
+                except Exception:
+                    pass
+        raise
     except Exception as e:
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Stream audio download cancelled by user")
         raise RuntimeError(format_stream_error(e))
 
     audio_file = None
@@ -879,16 +919,21 @@ def scan_audio_energy_peaks(
 def transcribe_audio_peaks(
     audio_path: str,
     peaks: List[Dict[str, Any]],
-    progress_callback: Optional[Callable[[int, str], None]] = None
+    progress_callback: Optional[Callable[[int, str], None]] = None,
+    cancel_event: Optional[threading.Event] = None
 ) -> List[Dict[str, Any]]:
     """
     SYNERGY PIPELINE: Transcribes ONLY the peak regions (±15s around each peak)
     using fast Whisper, giving the LLM actual dialogue context for each candidate.
     For 8 peaks × ~36s each = ~5 minutes of audio — feasible on CPU in ~8-12 minutes.
     Returns peaks enriched with 'transcript' and 'spoken_text' fields.
+    Supports thread-safe cancellation.
     """
     from backend.hardware import FFMPEG_BIN, WHISPER_CLI
     
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Peak transcription cancelled by user")
+
     if not peaks or not audio_path or not os.path.exists(audio_path):
         return peaks
 
@@ -916,6 +961,8 @@ def transcribe_audio_peaks(
     enriched = []
     total = len(peaks)
     for idx, peak in enumerate(peaks):
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelledError("Peak transcription cancelled by user")
         p_start = float(peak.get("start", 0))
         p_end = float(peak.get("end", p_start + 36))
         # Expand window slightly for better context
