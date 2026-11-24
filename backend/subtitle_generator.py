@@ -1,6 +1,29 @@
 import os
 import re
-from typing import List, Dict, Any, Optional
+import urllib.request
+from typing import List, Dict, Any, Optional, Tuple
+
+FONTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "fonts"))
+os.makedirs(FONTS_DIR, exist_ok=True)
+
+def ensure_skyglow_font() -> Tuple[str, str]:
+    """
+    Ensures Poppins-BlackItalic.ttf is downloaded locally to assets/fonts/.
+    Returns (font_family_name, fonts_dir).
+    """
+    target = os.path.join(FONTS_DIR, "Poppins-BlackItalic.ttf")
+    if not os.path.exists(target) or os.path.getsize(target) < 20 * 1024:
+        url = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-BlackItalic.ttf"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 OpenShorts/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp, open(target, "wb") as f:
+                f.write(resp.read())
+        except Exception as e:
+            print(f"[WARN] Could not download Poppins-BlackItalic.ttf: {e}")
+
+    if os.path.exists(target) and os.path.getsize(target) >= 20 * 1024:
+        return ("Poppins Black", FONTS_DIR)
+    return ("Arial Black", FONTS_DIR)
 
 def hex_to_ass_color(hex_str: str, alpha: int = 0) -> str:
     """
@@ -133,10 +156,9 @@ def _is_font_installed(font_name: str) -> bool:
 def resolve_font_family(font_family: str, style_preset: str = "") -> str:
     """Resolves font family with fallbacks for cross-platform portability."""
     if style_preset == "skyglow":
-        for test_name in ["Montserrat ExtraBold", "Montserrat", font_family]:
-            if test_name and _is_font_installed(test_name):
-                return test_name
-        return "Arial Black"
+        if not font_family or font_family in ("Poppins Black", "Arial Black", ""):
+            return ensure_skyglow_font()[0]
+        return font_family
     return font_family or "Arial Black"
 
 def generate_ass_subtitles(
@@ -157,13 +179,16 @@ def generate_ass_subtitles(
     play_res_y: int = 1920,
     hook_config: Optional[Dict[str, Any]] = None,
     sync_offset_ms: int = 0,
-    censor_profanity: bool = True
+    censor_profanity: bool = True,
+    is_preview: bool = False
 ) -> str:
     r"""
     Generates a complete ASS subtitle file with free 2D positioning (\pos), word highlights,
     optional auto-profanity masking, and progressive word reveals.
-    Features the reference SkyGlow preset: dual-layer rendering (Layer 0 neon halo outline,
-    Layer 1 crisp foreground text), progressive word reveals, and punchy pop transitions.
+    Features the reference SkyGlow preset: 3 synchronized ASS layers (SkyOuter wide neon bloom,
+    SkyInner tight halo, SkyFill crisp text with subtle drop shadow), locked-position per-word
+    smooth fade-in with zero horizontal shifting, smooth phrase fade-out, 2-line auto-stacking,
+    and Green/Cyan/Gold neon palette cycling.
     """
     effective_font = resolve_font_family(font_family, style_preset)
     sync_offset = float(sync_offset_ms or 0) / 1000.0
@@ -181,7 +206,19 @@ def generate_ass_subtitles(
     ass_back = hex_to_ass_color("#000000", alpha=140 if border_style == 3 else 80)
 
     bold = -1 # True in ASS
-    italic = 0
+    italic = -1 if style_preset == "skyglow" else 0
+
+    if style_preset == "skyglow":
+        styles_section = f"""[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,1,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1
+Style: SkyOuter,{effective_font},{font_size},&HFFFFFFFF&,&H00000000&,&H00000000&,&H00000000&,0,-1,0,0,100,100,1,0,1,11,0,5,60,60,60,1
+Style: SkyInner,{effective_font},{font_size},&HFFFFFFFF&,&H00000000&,&H00000000&,&H00000000&,0,-1,0,0,100,100,1,0,1,4.5,0,5,60,60,60,1
+Style: SkyFill,{effective_font},{font_size},{ass_primary},&H00000000&,&H00101010&,&H70000000&,0,-1,0,0,100,100,1,0,1,0.8,3,5,60,60,60,1"""
+    else:
+        styles_section = f"""[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,1,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1"""
 
     header = f"""[Script Info]
 Title: OpenShorts Custom Template Subtitles
@@ -192,9 +229,7 @@ YCbCr Matrix: TV.709
 PlayResX: {play_res_x}
 PlayResY: {play_res_y}
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,1,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1
+{styles_section}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"""
@@ -220,7 +255,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
         if valid_segs[k]["end"] > valid_segs[k + 1]["start"]:
             valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.04, valid_segs[k + 1]["start"])
 
-    for seg in valid_segs:
+    # SkyGlow 3-color palette cycling across phrases
+    DEFAULT_SKYGLOW_PALETTE = ["#22FF66", "#00EEFF", "#FFE100"]
+    if highlight_color and highlight_color.upper() not in ["#00FF66", "#22FF66", "#00EEFF", "#FFE100"]:
+        skyglow_palette = [highlight_color, "#00EEFF", "#FFE100"]
+    else:
+        skyglow_palette = DEFAULT_SKYGLOW_PALETTE
+
+    for seg_idx, seg in enumerate(valid_segs):
         start_t = seg["start"]
         end_t = seg["end"]
         text = seg["text"]
@@ -242,75 +284,139 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
                         "start": max(start_t, min(end_t, w_s)),
                         "end": max(start_t, min(end_t, w_e))
                     })
+        if not cleaned_words and text:
+            raw_w_list = text.split()
+            dur = max(0.1, end_t - start_t)
+            cleaned_words = [
+                {
+                    "word": w.upper() if is_uppercase else w,
+                    "start": start_t + (i / max(1, len(raw_w_list))) * dur,
+                    "end": start_t + ((i + 1) / max(1, len(raw_w_list))) * dur
+                }
+                for i, w in enumerate(raw_w_list)
+            ]
 
         # ==========================================
-        # PRESET A: SkyGlow Dual-Layer Progressive
+        # PRESET A: SkyGlow 3-Layer Zero-Jitter Engine
         # ==========================================
         if style_preset == "skyglow":
+            seg_neon_hex = skyglow_palette[seg_idx % len(skyglow_palette)]
+            ass_neon = hex_to_ass_color(seg_neon_hex)
+
             num_w = len(cleaned_words)
-            if num_w > 1:
-                # Monotonic, gapless word starts
+            total_chars = len(text)
+            is_punchy = (total_chars <= 16) or text.endswith(('!', '?')) or ('HAHA' in text.upper()) or ('LMAO' in text.upper())
+
+            split_idx = None
+            is_neon_flags = []
+
+            if num_w <= 3 and is_punchy:
+                # Full-phrase neon glow
+                is_neon_flags = [True] * num_w
+                split_idx = None
+            elif num_w <= 4 and total_chars <= 24:
+                # 1 centered line: setup words white, payoff words neon
+                split_idx = None
+                if num_w == 1:
+                    is_neon_flags = [True]
+                elif num_w == 2:
+                    is_neon_flags = [False, True]
+                elif num_w == 3:
+                    is_neon_flags = [False, True, True]
+                else: # num_w == 4
+                    is_neon_flags = [False, False, True, True]
+            else:
+                # >= 4 words & total chars > 22 (or long phrase): 2 balanced centered lines
+                best_k = max(1, min(num_w - 1, num_w // 2))
+                min_diff = 9999
+                for k in range(1, num_w):
+                    l1 = " ".join(w["word"] for w in cleaned_words[:k])
+                    l2 = " ".join(w["word"] for w in cleaned_words[k:])
+                    diff = abs(len(l1) - len(l2))
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_k = k
+                split_idx = best_k
+                is_neon_flags = [False] * split_idx + [True] * (num_w - split_idx)
+
+            # Monotonic, gapless word starts for locked-position reveal
+            if num_w > 0:
                 w_starts = [start_t]
                 for i in range(1, num_w):
-                    s_i = max(cleaned_words[i]["start"], w_starts[i - 1] + 0.04)
+                    w_s = cleaned_words[i].get("start", start_t)
+                    s_i = max(w_s, w_starts[i - 1] + 0.04)
                     s_i = min(s_i, end_t - 0.04 * (num_w - i))
                     w_starts.append(s_i)
-
-                is_short_or_punchy = (num_w <= 2) or ('!' in text)
-
-                for i in range(num_w):
-                    disp_start = w_starts[i]
-                    disp_end = w_starts[i + 1] if (i + 1 < num_w) else end_t
-                    disp_end = max(disp_start + 0.04, disp_end)
-                    w_start_str = format_ass_timestamp(disp_start)
-                    w_end_str = format_ass_timestamp(disp_end)
-
-                    revealed = cleaned_words[:i + 1]
-                    plain_reveal = " ".join([item["word"] for item in revealed])
-
-                    if is_short_or_punchy:
-                        # 100% neon highlight for punchy phrases
-                        halo_content = plain_reveal
-                        if len(revealed) == 1:
-                            fg_content = f"{{\\c{ass_highlight}\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)}}{revealed[0]['word']}"
-                        else:
-                            setup_str = " ".join([item["word"] for item in revealed[:-1]])
-                            fg_content = f"{{\\c{ass_highlight}}}{setup_str} {{\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)}}{revealed[-1]['word']}"
-                    else:
-                        # 3+ words: setup words in white, active word in neon pop
-                        halo_content = plain_reveal
-                        if len(revealed) == 1:
-                            fg_content = f"{{\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)\\c{ass_highlight}}}{revealed[0]['word']}"
-                        else:
-                            setup_str = " ".join([item["word"] for item in revealed[:-1]])
-                            fg_content = f"{{\\c{ass_primary}}}{setup_str} {{\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)\\c{ass_highlight}}}{revealed[-1]['word']}"
-
-                    # Layer 0: Neon halo bloom
-                    lines.append(
-                        f"Dialogue: 0,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{{\\bord9\\blur12\\shad0\\1a&HFF&\\3a&H45&\\3c{ass_highlight}}}{halo_content}"
-                    )
-                    # Layer 1: Foreground sharp text
-                    lines.append(
-                        f"Dialogue: 1,{w_start_str},{w_end_str},Default,,0,0,0,,{pos_tag}{{\\bord2\\shad2\\blur0.4}}{fg_content}"
-                    )
-
-            elif num_w == 1:
-                raw_w = cleaned_words[0]["word"]
-                halo_content = raw_w
-                fg_content = f"{{\\c{ass_highlight}\\fscx107\\fscy107\\t(0,65,\\fscx100\\fscy100)}}{raw_w}"
-                lines.append(
-                    f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord9\\blur12\\shad0\\1a&HFF&\\3a&H45&\\3c{ass_highlight}}}{halo_content}"
-                )
-                lines.append(
-                    f"Dialogue: 1,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord2\\shad2\\blur0.4}}{fg_content}"
-                )
             else:
-                lines.append(
-                    f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord9\\blur12\\shad0\\1a&HFF&\\3a&H45&\\3c{ass_highlight}}}{text}"
-                )
-                lines.append(
-                    f"Dialogue: 1,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{{\\bord2\\shad2\\blur0.4}}{{\\c{ass_primary}}}{text}"
-                )
+                w_starts = []
+
+            if seg_idx + 1 < len(valid_segs):
+                next_start = valid_segs[seg_idx + 1]["start"]
+                extended_end = min(end_t + 0.18, max(end_t + 0.05, next_start - 0.02))
+            else:
+                extended_end = end_t + 0.18
+            extended_end = max(start_t + 0.05, extended_end)
+
+            start_str = format_ass_timestamp(start_t)
+            ext_end_str = format_ass_timestamp(extended_end)
+
+            layer0_words = []
+            layer1_words = []
+            layer2_words = []
+            fade_ms = 110
+
+            for j in range(num_w):
+                w_str = cleaned_words[j]["word"]
+                is_neon = is_neon_flags[j]
+                rel_ms = max(0, int(round((w_starts[j] - start_t) * 1000))) if not is_preview else 0
+
+                if is_preview:
+                    if is_neon:
+                        l0 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&H62&\\4a&HFF&}}{w_str}"
+                        l1 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&H42&\\4a&HFF&}}{w_str}"
+                        l2 = f"{{\\1c{ass_neon}\\3c{ass_neon}\\1a&H00&\\3a&H85&\\4a&H50&}}{w_str}"
+                    else:
+                        l0 = f"{{\\3c&H000000&\\1a&HFF&\\3a&H55&\\4a&HFF&}}{w_str}"
+                        l1 = f"{{\\3c&H000000&\\1a&HFF&\\3a&H70&\\4a&HFF&}}{w_str}"
+                        l2 = f"{{\\1c{ass_primary}\\3c&H101010&\\1a&H00&\\3a&H90&\\4a&H40&}}{w_str}"
+                else:
+                    t_end = rel_ms + fade_ms
+                    if is_neon:
+                        l0 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H62&)}}{w_str}"
+                        l1 = f"{{\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H42&)}}{w_str}"
+                        l2 = f"{{\\1c{ass_neon}\\3c{ass_neon}\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\1a&H00&\\3a&H85&\\4a&H50&)}}{w_str}"
+                    else:
+                        l0 = f"{{\\3c&H000000&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H55&)}}{w_str}"
+                        l1 = f"{{\\3c&H000000&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\3a&H70&)}}{w_str}"
+                        l2 = f"{{\\1c{ass_primary}\\3c&H101010&\\1a&HFF&\\3a&HFF&\\4a&HFF&\\t({rel_ms},{t_end},\\1a&H00&\\3a&H90&\\4a&H40&)}}{w_str}"
+
+                layer0_words.append(l0)
+                layer1_words.append(l1)
+                layer2_words.append(l2)
+
+            def join_layer_words(w_list):
+                out_str = ""
+                for j, w_item in enumerate(w_list):
+                    out_str += w_item
+                    if j < len(w_list) - 1:
+                        sep = "\\N" if (split_idx is not None and j == split_idx - 1) else " "
+                        out_str += sep
+                return out_str
+
+            l0_body = join_layer_words(layer0_words)
+            l1_body = join_layer_words(layer1_words)
+            l2_body = join_layer_words(layer2_words)
+
+            fad_tag = "\\fad(0,150)" if not is_preview else ""
+            lines.append(
+                f"Dialogue: 0,{start_str},{ext_end_str},SkyOuter,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y}){fad_tag}\\blur16}}{l0_body}"
+            )
+            lines.append(
+                f"Dialogue: 1,{start_str},{ext_end_str},SkyInner,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y}){fad_tag}\\blur5}}{l1_body}"
+            )
+            lines.append(
+                f"Dialogue: 2,{start_str},{ext_end_str},SkyFill,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y}){fad_tag}\\blur0.3}}{l2_body}"
+            )
 
         # ==========================================
         # PRESET B: Speed / Clean / Box / Other Styles

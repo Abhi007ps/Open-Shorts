@@ -208,20 +208,20 @@ def generate_preview_frame(
                     break
 
         if style_p == "skyglow":
-            word_objs = [{"word": w.upper() if subtitle_config.get('is_uppercase', True) else w, "start": float(idx), "end": float(idx + 1)} for idx, w in enumerate(words_list)]
+            word_objs = [{"word": w.upper() if subtitle_config.get('is_uppercase', True) else w, "start": 0.0, "end": 10.0} for w in words_list]
             seg_to_render = [{
-                "start": float(mid_idx),
-                "end": float(mid_idx + 1),
+                "start": 0.0,
+                "end": 10.0,
                 "text": " ".join([w.upper() if subtitle_config.get('is_uppercase', True) else w for w in words_list]),
                 "words": word_objs
             }]
             generate_ass_subtitles(
                 segments=seg_to_render,
                 output_path=preview_ass,
-                font_family=subtitle_config.get("font_family", "Arial Black"),
+                font_family=subtitle_config.get("font_family", "Poppins Black"),
                 font_size=subtitle_config.get("font_size", 56),
                 primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
-                highlight_color=subtitle_config.get("highlight_color", "#00FF66"),
+                highlight_color=subtitle_config.get("highlight_color", "#22FF66"),
                 outline_color=subtitle_config.get("outline_color", "#000000"),
                 outline_width=subtitle_config.get("outline_width", 2),
                 shadow_depth=subtitle_config.get("shadow_depth", 2),
@@ -230,7 +230,8 @@ def generate_preview_frame(
                 style_preset="skyglow",
                 is_uppercase=False,
                 sync_offset_ms=0,
-                censor_profanity=subtitle_config.get("censor_profanity", True)
+                censor_profanity=subtitle_config.get("censor_profanity", True),
+                is_preview=True
             )
         else:
             formatted_words = []

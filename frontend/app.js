@@ -56,21 +56,21 @@ const state = {
   hookConfig: null,
   subtitlesConfig: {
     enabled: true,
-    font_family: "Arial Black",
-    font_size: 56,
+    font_family: "Poppins Black",
+    font_size: 60,
     position_x: 50,
     position_y: 50,
     style_preset: "skyglow",
     primary_color: "#FFFFFF",
-    highlight_color: "#00FF66",
+    highlight_color: "#22FF66",
     outline_color: "#000000",
     outline_width: 2,
     shadow_depth: 2,
     is_uppercase: true,
-    words_per_line: 3,
+    words_per_line: 4,
     model_name: "base.en",
     censor_profanity: true,
-    preview_text: "BRO SEE LOOK"
+    preview_text: "THIS IS WRONG WITH TODAY'S SOCIETY"
   },
   viralSettings: {
     min_duration: 8.0,
@@ -1047,20 +1047,25 @@ function initPresets() {
       state.subtitlesConfig.style_preset = style;
       
       if (style === "skyglow") {
-        setSubColors("#FFFFFF", "#00FF66", "#000000", 2, "Arial Black");
+        setSubColors("#FFFFFF", "#22FF66", "#000000", 2, "Poppins Black");
         state.subtitlesConfig.position_y = 50;
         state.subtitlesConfig.position_x = 50;
-        state.subtitlesConfig.font_size = 56;
-        state.subtitlesConfig.words_per_line = 3;
+        state.subtitlesConfig.font_size = 60;
+        state.subtitlesConfig.words_per_line = 4;
         state.subtitlesConfig.is_uppercase = true;
+        const fontSel = document.getElementById("select-font");
+        if (fontSel) fontSel.value = "Poppins Black";
         const sliderY = document.getElementById("slider-sub-y");
         const valY = document.getElementById("val-sub-y");
         if (sliderY) sliderY.value = 50;
         if (valY) valY.innerText = "50%";
         const sliderSize = document.getElementById("slider-font-size");
         const valSize = document.getElementById("val-font-size");
-        if (sliderSize) sliderSize.value = 56;
-        if (valSize) valSize.innerText = "56px";
+        if (sliderSize) sliderSize.value = 60;
+        if (valSize) valSize.innerText = "60px";
+        document.querySelectorAll("[data-words]").forEach(b => {
+          b.classList.toggle("active", b.getAttribute("data-words") === "4");
+        });
         if (typeof updateSubHandleUI === "function") updateSubHandleUI();
       } else if (style === "speed") {
         setSubColors("#FFFFFF", "#CCFF00", "#000000", 8, "Impact");
@@ -5862,7 +5867,11 @@ function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
   const posY = cH * ((state.subtitlesConfig.position_y !== undefined ? state.subtitlesConfig.position_y : 82) / 100);
 
   ctx.save();
-  ctx.font = `900 ${fontSize}px "${fontFam}", Impact, sans-serif`;
+  if (state.subtitlesConfig.style_preset === "skyglow") {
+    ctx.font = `italic 900 ${fontSize}px "Poppins", "Arial Black", Impact, sans-serif`;
+  } else {
+    ctx.font = `900 ${fontSize}px "${fontFam}", Impact, sans-serif`;
+  }
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
@@ -5898,14 +5907,31 @@ function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
         ctx.translate(-wordCenterX, -wordCenterY);
       }
 
-      if (state.subtitlesConfig.style_preset === "skyglow" && isWordActive) {
-        ctx.save();
-        ctx.shadowColor = hlColor;
-        ctx.shadowBlur = 14;
-        ctx.strokeStyle = hlColor;
-        ctx.lineWidth = strokeW + 4;
-        ctx.strokeText(wItem.text, wordCenterX, wordCenterY);
+      if (state.subtitlesConfig.style_preset === "skyglow") {
+        if (isWordActive) {
+          ctx.save();
+          ctx.shadowColor = hlColor;
+          ctx.shadowBlur = 18;
+          ctx.strokeStyle = hlColor;
+          ctx.lineWidth = strokeW + 4;
+          ctx.strokeText(wItem.text, wordCenterX, wordCenterY);
+          ctx.restore();
+        } else {
+          ctx.save();
+          ctx.shadowColor = "rgba(0, 0, 0, 0.75)";
+          ctx.shadowBlur = 6;
+          ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+          ctx.lineWidth = 1;
+          ctx.strokeText(wItem.text, wordCenterX, wordCenterY);
+          ctx.restore();
+        }
+
+        ctx.fillStyle = isWordActive ? hlColor : priColor;
+        ctx.fillText(wItem.text, wordCenterX, wordCenterY);
         ctx.restore();
+
+        startX += wItem.width;
+        return;
       }
 
       ctx.shadowColor = "rgba(0, 0, 0, 0.85)";

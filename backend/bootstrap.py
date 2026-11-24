@@ -71,6 +71,19 @@ def verify_models():
     except Exception as e:
         print(f"  [ERROR] Model verification error: {e}")
 
+def verify_fonts():
+    """Ensure Poppins-BlackItalic.ttf caption font is present; auto-download if missing."""
+    from backend.subtitle_generator import ensure_skyglow_font, FONTS_DIR
+    try:
+        font_family, f_dir = ensure_skyglow_font()
+        font_path = os.path.join(f_dir, "Poppins-BlackItalic.ttf")
+        if os.path.isfile(font_path):
+            print(f"  [OK] Caption Font:   Poppins-BlackItalic.ttf ready")
+        else:
+            print(f"  [WARN] Caption Font: Fallback to {font_family}")
+    except Exception as e:
+        print(f"  [WARN] Caption Font check: {e}")
+
 def verify_hardware():
     """Detect and display active hardware encoder (NVIDIA / Intel / AMD / Apple / CPU), RAM, VRAM, and Auto-Tuned Tier."""
     from backend.hardware import get_hardware_profile
@@ -97,6 +110,7 @@ def main():
     check_directories()
     verify_binaries()
     verify_models()
+    verify_fonts()
     verify_hardware()
     print("---------------------------------------------------------------------")
     print(" [READY] All systems verified. Studio engine is operational!")

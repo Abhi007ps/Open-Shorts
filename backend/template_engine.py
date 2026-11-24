@@ -798,7 +798,12 @@ def build_composite_filtergraph(
     sub_target = "[pre_vaapi]" if encoder_name == "h264_vaapi" else "[out_v]"
     if subtitles_ass_path and os.path.exists(subtitles_ass_path):
         escaped_ass = subtitles_ass_path.replace("\\", "/").replace(":", "\\:")
-        filter_chains.append(f"[pre_sub]ass='{escaped_ass}'{sub_target}")
+        fonts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "fonts"))
+        fonts_opt = ""
+        if os.path.isdir(fonts_dir):
+            escaped_fonts = fonts_dir.replace("\\", "/").replace(":", "\\:")
+            fonts_opt = f":fontsdir='{escaped_fonts}'"
+        filter_chains.append(f"[pre_sub]ass='{escaped_ass}'{fonts_opt}{sub_target}")
     else:
         filter_chains.append(f"[pre_sub]null{sub_target}")
 
