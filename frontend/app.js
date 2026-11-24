@@ -56,15 +56,15 @@ const state = {
   hookConfig: null,
   subtitlesConfig: {
     enabled: true,
-    font_family: "Poppins Black",
-    font_size: 60,
+    font_family: "Montserrat ExtraBold",
+    font_size: 74,
     position_x: 50,
     position_y: 50,
     style_preset: "skyglow",
-    primary_color: "#FFFFFF",
-    highlight_color: "#22FF66",
+    primary_color: "#A8F0F2",
+    highlight_color: "#7DFF14",
     outline_color: "#000000",
-    outline_width: 2,
+    outline_width: 1,
     shadow_depth: 2,
     is_uppercase: true,
     words_per_line: 4,
@@ -1052,22 +1052,22 @@ function initPresets() {
       state.subtitlesConfig.style_preset = style;
       
       if (style === "skyglow") {
-        setSubColors("#FFFFFF", "#22FF66", "#000000", 2, "Poppins Black");
+        setSubColors("#A8F0F2", "#7DFF14", "#000000", 1, "Montserrat ExtraBold");
         state.subtitlesConfig.position_y = 50;
         state.subtitlesConfig.position_x = 50;
-        state.subtitlesConfig.font_size = 60;
+        state.subtitlesConfig.font_size = 74;
         state.subtitlesConfig.words_per_line = 4;
         state.subtitlesConfig.is_uppercase = true;
         const fontSel = document.getElementById("select-font");
-        if (fontSel) fontSel.value = "Poppins Black";
+        if (fontSel) fontSel.value = "Montserrat ExtraBold";
         const sliderY = document.getElementById("slider-sub-y");
         const valY = document.getElementById("val-sub-y");
         if (sliderY) sliderY.value = 50;
         if (valY) valY.innerText = "50%";
         const sliderSize = document.getElementById("slider-font-size");
         const valSize = document.getElementById("val-font-size");
-        if (sliderSize) sliderSize.value = 60;
-        if (valSize) valSize.innerText = "60px";
+        if (sliderSize) sliderSize.value = 74;
+        if (valSize) valSize.innerText = "74px";
         document.querySelectorAll("[data-words]").forEach(b => {
           b.classList.toggle("active", b.getAttribute("data-words") === "4");
         });
@@ -5891,7 +5891,7 @@ function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
 
   ctx.save();
   if (state.subtitlesConfig.style_preset === "skyglow") {
-    ctx.font = `900 ${fontSize}px "Poppins", "Arial Black", Impact, sans-serif`;
+    ctx.font = `800 ${fontSize}px "Montserrat", "Arial Black", Impact, sans-serif`;
   } else {
     ctx.font = `900 ${fontSize}px "${fontFam}", Impact, sans-serif`;
   }

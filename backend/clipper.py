@@ -218,10 +218,10 @@ def generate_preview_frame(
             generate_ass_subtitles(
                 segments=seg_to_render,
                 output_path=preview_ass,
-                font_family=subtitle_config.get("font_family", "Poppins Black"),
-                font_size=subtitle_config.get("font_size", 56),
-                primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
-                highlight_color=subtitle_config.get("highlight_color", "#22FF66"),
+                font_family=subtitle_config.get("font_family", "Montserrat ExtraBold"),
+                font_size=subtitle_config.get("font_size", 74),
+                primary_color=subtitle_config.get("primary_color", "#A8F0F2"),
+                highlight_color=subtitle_config.get("highlight_color", "#7DFF14"),
                 outline_color=subtitle_config.get("outline_color", "#000000"),
                 outline_width=subtitle_config.get("outline_width", 2),
                 shadow_depth=subtitle_config.get("shadow_depth", 2),
@@ -769,19 +769,21 @@ def render_clip(
     if clip_subtitles and subtitles_enabled:
         rand_suffix = uuid.uuid4().hex[:6]
         clip_ass_path = os.path.join(TEMP_DIR, f"{clip_id}_{rand_suffix}_subs.ass")
+        sub_preset = subtitle_config.get("style_preset", "skyglow")
+        default_sub_font = "Montserrat ExtraBold" if sub_preset == "skyglow" else "Arial Black"
         generate_ass_subtitles(
             segments=clip_subtitles,
             output_path=clip_ass_path,
-            font_family=subtitle_config.get("font_family", "Arial Black"),
-            font_size=subtitle_config.get("font_size", 56),
-            primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
-            highlight_color=subtitle_config.get("highlight_color", "#00FF66"),
+            font_family=subtitle_config.get("font_family", default_sub_font),
+            font_size=subtitle_config.get("font_size", 74 if sub_preset == "skyglow" else 56),
+            primary_color=subtitle_config.get("primary_color", "#A8F0F2" if sub_preset == "skyglow" else "#FFFFFF"),
+            highlight_color=subtitle_config.get("highlight_color", "#7DFF14" if sub_preset == "skyglow" else "#00FF66"),
             outline_color=subtitle_config.get("outline_color", "#000000"),
             outline_width=subtitle_config.get("outline_width", 2),
             shadow_depth=subtitle_config.get("shadow_depth", 2),
             position_x=subtitle_config.get("position_x", 50.0),
             position_y=subtitle_config.get("position_y", 50.0),
-            style_preset=subtitle_config.get("style_preset", "skyglow"),
+            style_preset=sub_preset,
             is_uppercase=subtitle_config.get("is_uppercase", True),
             sync_offset_ms=subtitle_config.get("sync_offset_ms", 0),
             censor_profanity=subtitle_config.get("censor_profanity", True)
