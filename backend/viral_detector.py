@@ -494,7 +494,7 @@ def snap_to_clean_boundaries(
                     break
                     
         if not hook_snapped and hook_candidate_subs:
-            best_start = max(0.0, round(float(hook_candidate_subs[0].get("start", start)) - 0.04, 2))
+            best_start = max(0.0, round(float(hook_candidate_subs[0].get("start", start)) - 0.05, 2))
             meta["cold_open_applied"] = True
             meta["snap_mode"] = "word_level_transcript"
                 
@@ -541,10 +541,27 @@ def snap_to_clean_boundaries(
                 break
 
     dur = best_end - best_start
-    if dur < min_duration:
-        best_end = min(best_end + (min_duration - dur), best_start + max_duration)
-    elif dur > max_duration:
-        best_end = best_start + max_duration
+    if dur > max_duration:
+        if subtitles:
+            valid_subs = [
+                s for s in subtitles
+                if float(s.get("end", 0)) <= (best_start + max_duration)
+                and float(s.get("end", 0)) >= (best_start + min_duration)
+            ]
+            if valid_subs:
+                best_sub = valid_subs[-1]
+                for s in reversed(valid_subs):
+                    txt = s.get("text", "").strip()
+                    if txt.endswith((".", "!", "?")):
+                        best_sub = s
+                        break
+                best_end = round(float(best_sub.get("end", best_start + max_duration)) + 0.30, 2)
+            else:
+                best_end = round(best_start + max_duration, 2)
+        else:
+            best_end = round(best_start + max_duration, 2)
+    elif dur < min_duration:
+        best_end = round(best_start + min_duration, 2)
         
     return round(best_start, 2), round(best_end, 2), meta
 
@@ -760,8 +777,24 @@ def build_dynamic_narrative_candidates(
             if (c_end - c_start) < ideal_min:
                 c_start = max(0.0, round(c_start - (ideal_min - (c_end - c_start)), 2))
         elif raw_dur > ideal_max:
-            # Maintain hook onset and snap punchline at ideal_max
-            c_end = min(video_duration, round(c_start + ideal_max, 2))
+            if subtitles:
+                valid_after = [
+                    s for s in subtitles
+                    if float(s.get("end", 0)) <= (c_start + ideal_max)
+                    and float(s.get("end", 0)) >= (c_start + ideal_min)
+                ]
+                if valid_after:
+                    best_s = valid_after[-1]
+                    for s in reversed(valid_after):
+                        txt = s.get("text", "").strip()
+                        if txt.endswith((".", "!", "?")):
+                            best_s = s
+                            break
+                    c_end = min(video_duration, round(float(best_s.get("end", c_start + ideal_max)) + 0.30, 2))
+                else:
+                    c_end = min(video_duration, round(c_start + ideal_max, 2))
+            else:
+                c_end = min(video_duration, round(c_start + ideal_max, 2))
 
         final_dur = round(c_end - c_start, 1)
         if min_dur <= final_dur <= max_dur:
@@ -842,6 +875,33 @@ def detect_viral_moments(
     min_dur = max(6.0, float(min_duration))
     max_dur = max(min_dur + 3.0, float(max_duration))
     
+    # Configure Profile Weights (Audio, Pitch, Hook, Speech, Motion)
+    profile_lower = (profile or "balanced").lower()
+    if profile_lower in ("high_energy", "energy"):
+        def_weights = (0.40, 0.25, 0.20, 0.10, 0.05)
+    elif profile_lower in ("comedy", "funny"):
+        def_weights = (0.15, 0.20, 0.25, 0.35, 0.05)
+    elif profile_lower in ("action", "gameplay"):
+        def_weights = (0.20, 0.10, 0.20, 0.15, 0.35)
+    else:  # "balanced", "optimized", or standard
+        def_weights = (0.25, 0.15, 0.25, 0.20, 0.15)
+
+    w_audio = float(weight_audio) if weight_audio is not None else def_weights[0]
+    w_pitch = float(weight_pitch) if weight_pitch is not None else def_weights[1]
+    w_hook = float(weight_hook) if weight_hook is not None else def_weights[2]
+    w_speech = float(weight_speech) if weight_speech is not None else def_weights[3]
+    w_motion = float(weight_motion) if weight_motion is not None else def_weights[4]
+
+    w_total = w_audio + w_pitch + w_hook + w_speech + w_motion
+    if w_total > 0:
+        w_audio /= w_total
+        w_pitch /= w_total
+        w_hook /= w_total
+        w_speech /= w_total
+        w_motion /= w_total
+    else:
+        w_audio, w_pitch, w_hook, w_speech, w_motion = (0.25, 0.15, 0.25, 0.20, 0.15)
+
     # For very short slices (stream candidates ≤ 60s loaded from Audio Pull),
     # do NOT return a fake "Full Highlight" — run real analysis but with relaxed thresholds.
     is_short_slice = (video_duration <= 60.0)
@@ -994,7 +1054,14 @@ def detect_viral_moments(
             reaction_category = "🎙️ Streamer Commentary & Story"
             badge_color = "#10B981" # Emerald
 
-        prelim_score = (audio_score * 0.35 + pitch_score * 0.15 + hook_score * 0.20 + speech_score * 0.30) - dead_air_pen
+        # Normalized non-motion weights for initial ranking pass
+        w_nm = w_audio + w_pitch + w_hook + w_speech
+        wa_n = w_audio / w_nm if w_nm > 0 else 0.35
+        wp_n = w_pitch / w_nm if w_nm > 0 else 0.15
+        wh_n = w_hook / w_nm if w_nm > 0 else 0.20
+        ws_n = w_speech / w_nm if w_nm > 0 else 0.30
+
+        prelim_score = (audio_score * wa_n + pitch_score * wp_n + hook_score * wh_n + speech_score * ws_n) - dead_air_pen
         scored_candidates.append({
             "start": round(start_t, 1),
             "end": round(end_t, 1),
@@ -1079,15 +1146,16 @@ def detect_viral_moments(
         transient_ratio = cand.get("transient_contrast", 1.0)
         contrast_pts = min(6.0, max(0.0, (transient_ratio - 1.2) * 2.0))
 
-        base_pts = 55.0
-        climax_pts = (cand["audio_score"] * 0.65 + cand["pitch_score"] * 0.35) * 18.0
-        facecam_pts = cam_reaction * 16.0
-        duty_pts = cand["duty_cycle"] * 8.0
-        hook_pts = cand["hook_score"] * 8.0
-        speech_pts = cand["speech_score"] * 8.0
-        dead_air_deduction = cand["dead_air_pen"] * 64.0
+        base_pts = 50.0
+        audio_pts = cand["audio_score"] * w_audio * 50.0
+        pitch_pts = cand["pitch_score"] * w_pitch * 50.0
+        motion_pts = (cam_reaction * 0.70 + gp_motion * 0.30) * w_motion * 50.0
+        hook_pts = cand["hook_score"] * w_hook * 50.0
+        speech_pts = cand["speech_score"] * w_speech * 50.0
+        duty_pts = cand["duty_cycle"] * 6.0
+        dead_air_deduction = cand["dead_air_pen"] * 50.0
 
-        raw_virality = base_pts + climax_pts + facecam_pts + duty_pts + hook_pts + speech_pts + synergy_bonus + contrast_pts - dead_air_deduction
+        raw_virality = base_pts + audio_pts + pitch_pts + motion_pts + hook_pts + speech_pts + duty_pts + synergy_bonus + contrast_pts - dead_air_deduction
         cand["virality_score"] = int(min(99, max(68, round(raw_virality))))
         cand["synergy_bonus"] = int(round(synergy_bonus))
 
@@ -1107,7 +1175,6 @@ def detect_viral_moments(
                     auto_target_count = max(1, min(3, int(video_duration / 15)))
                 else:
                     auto_target_count = max(6, min(12, int(video_duration / 300)))
-                # Evaluate candidate moments across the stream for Auto Mode
                 llm_eval_pool = distinct_candidates[:min(len(distinct_candidates), max(10, auto_target_count + 4))]
                 approved_clips, curation_reason = curate_auto_viral_clips(
                     candidates=llm_eval_pool,
@@ -1121,64 +1188,19 @@ def detect_viral_moments(
                     print(f"[Viral Detector] LLM Mind selected {len(final_list)} viral clips. Reason: {curation_reason}")
             else:
                 eval_limit = max(1, min(len(distinct_candidates), target_clips))
-                eval_pool = distinct_candidates[:eval_limit]
-                remaining_pool = distinct_candidates[eval_limit:]
-                refined_pool = []
-
-                for cand in eval_pool:
-                    temp_clip = {
-                        "start": cand["start"],
-                        "end": cand["end"],
-                        "duration": cand["duration"],
-                        "climax_t": cand.get("climax_t", (cand["start"] + cand["end"]) / 2),
-                        "reason": cand.get("reaction_category", "Highlight"),
-                        "rank": 1,
-                        "metrics": {
-                            "voice_energy": int(round(cand["audio_score"] * 100)),
-                            "facecam_reaction": int(round(cand.get("facecam_reaction", 0.5) * 100)),
-                            "hook_quality": int(round(cand["hook_score"] * 100)),
-                            "speech_density": int(round(cand["speech_score"] * 100)),
-                            "action_motion": int(round(cand.get("gameplay_motion", 0.5) * 100)),
-                            "synergy_bonus": cand.get("synergy_bonus", 0)
-                        }
-                    }
-                    refined = refine_clip_with_llm(
-                        clip=temp_clip,
-                        subtitles=usable_subs,
-                        video_duration=video_duration,
-                        min_duration=min_dur,
-                        max_duration=max_dur,
-                        model=llm_model
-                    )
-
-                    if refined.get("is_rejected_by_llm", False):
-                        continue
-
-                    if refined.get("llm_verified"):
-                        cand["start"] = refined["start"]
-                        cand["end"] = refined["end"]
-                        cand["duration"] = refined["duration"]
-                        if refined.get("title"):
-                            cand["title"] = refined["title"]
-                        if refined.get("llm_punchline"):
-                            cand["llm_punchline"] = refined["llm_punchline"]
-                        cand["llm_verified"] = True
-
-                        llm_hook = refined.get("metrics", {}).get("hook_quality", cand["hook_score"] * 100)
-                        cand["hook_score"] = llm_hook / 100.0
-
-                        physical_pts = (cand["audio_score"] * 0.40 + cand["pitch_score"] * 0.20 + cand.get("facecam_reaction", 0.5) * 0.40) * 45.0 + cand.get("synergy_bonus", 0)
-                        semantic_pts = (cand["hook_score"] * 0.60 + cand["speech_score"] * 0.40) * 45.0
-                        llm_narrative_bonus = 6.0
-                        fused_virality = 10.0 + physical_pts + semantic_pts + llm_narrative_bonus
-                        cand["virality_score"] = int(min(99, max(68, round(fused_virality))))
-
-                    refined_pool.append(cand)
-
-                if refined_pool:
-                    distinct_candidates = refined_pool + remaining_pool
-                    distinct_candidates.sort(key=lambda x: (1 if x.get("llm_verified") else 0, x["virality_score"]), reverse=True)
-                    final_list = distinct_candidates[:target_clips]
+                llm_eval_pool = distinct_candidates[:min(len(distinct_candidates), max(10, eval_limit + 4))]
+                approved_clips, curation_reason = curate_auto_viral_clips(
+                    candidates=llm_eval_pool,
+                    subtitles=usable_subs,
+                    video_duration=video_duration,
+                    target_count=eval_limit,
+                    model=llm_model
+                )
+                if approved_clips:
+                    final_list = approved_clips[:eval_limit]
+                    print(f"[Viral Detector] LLM Mind curated {len(final_list)} target clips. Reason: {curation_reason}")
+                else:
+                    final_list = distinct_candidates[:eval_limit]
 
         except Exception as llm_err:
             print(f"[Viral Detector] LLM Cognitive Brain pass skipped: {llm_err}")

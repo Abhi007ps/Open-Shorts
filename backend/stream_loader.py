@@ -18,6 +18,9 @@ try:
 except Exception:
     pass
 
+# Global cache for probed stream metadata (heatmap, subtitles, chapters, formats)
+_PROBED_INFO_CACHE: Dict[str, Any] = {}
+
 def find_cookies_file() -> Optional[str]:
     """Finds cookies.txt file in root, storage, or user profile for authenticated YouTube requests."""
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -74,7 +77,7 @@ def parse_time_str(time_str: str) -> float:
 
 def probe_stream(url: str) -> Dict[str, Any]:
     """
-    Extracts stream metadata (title, duration, uploader, thumbnail, chapters, comments)
+    Extracts stream metadata (title, duration, uploader, thumbnail, chapters, heatmap, subtitles)
     without downloading video content. Takes 1-3 seconds.
     """
     url = url.strip()
@@ -82,7 +85,6 @@ def probe_stream(url: str) -> Dict[str, Any]:
         raise ValueError("Stream URL is empty.")
 
     ydl_opts = {
-        "extract_flat": True,
         "skip_download": True,
         "quiet": True,
         "no_warnings": True
@@ -96,6 +98,9 @@ def probe_stream(url: str) -> Dict[str, Any]:
                 raise ValueError("Could not extract stream info from URL.")
     except Exception as e:
         raise RuntimeError(format_stream_error(e))
+
+    # Cache full info for subsequent zero-download processing
+    _PROBED_INFO_CACHE[url] = info
 
     duration = float(info.get("duration") or 0.0)
     title = info.get("title") or "Live Stream"
@@ -116,6 +121,9 @@ def probe_stream(url: str) -> Dict[str, Any]:
             "duration": round(c_end - c_start, 1)
         })
 
+    has_heatmap = bool(info.get("heatmap"))
+    has_captions = bool(info.get("subtitles") or info.get("automatic_captions"))
+
     return {
         "status": "success",
         "url": url,
@@ -125,8 +133,210 @@ def probe_stream(url: str) -> Dict[str, Any]:
         "duration_str": format_seconds_to_hms(duration),
         "thumbnail": thumbnail,
         "chapters_count": len(chapters),
-        "chapters": chapters[:25]
+        "chapters": chapters[:25],
+        "has_heatmap": has_heatmap,
+        "has_captions": has_captions
     }
+
+def extract_heatmap_peaks(info: Dict[str, Any], duration: float, top_k: int = 10) -> List[Dict[str, Any]]:
+    """
+    Extracts high-intensity audience re-watch peaks from YouTube's native 'heatmap' curve.
+    Finds local maxima above the median intensity, enforcing >=65s separation between peaks.
+    Returns ranked candidate windows [start, end] centered at each peak.
+    """
+    raw_heatmap = info.get("heatmap") or []
+    if not raw_heatmap or not isinstance(raw_heatmap, list):
+        return []
+
+    values = [float(item.get("value", 0.0)) for item in raw_heatmap if isinstance(item, dict)]
+    if not values:
+        return []
+
+    sorted_vals = sorted(values)
+    median_val = sorted_vals[len(sorted_vals) // 2]
+    threshold = max(0.18, median_val * 1.10)
+
+    candidates = []
+    n = len(raw_heatmap)
+    for i in range(n):
+        item = raw_heatmap[i]
+        val = float(item.get("value", 0.0))
+        if val < threshold:
+            continue
+
+        is_local_max = True
+        if i > 0 and float(raw_heatmap[i - 1].get("value", 0.0)) > val:
+            is_local_max = False
+        if i < n - 1 and float(raw_heatmap[i + 1].get("value", 0.0)) > val:
+            is_local_max = False
+
+        if is_local_max:
+            s_time = float(item.get("start_time", 0.0))
+            e_time = float(item.get("end_time", s_time + 10.0))
+            center = (s_time + e_time) / 2.0
+            candidates.append({
+                "center_sec": center,
+                "value": val,
+                "start_time": s_time,
+                "end_time": e_time
+            })
+
+    candidates.sort(key=lambda x: x["value"], reverse=True)
+
+    peaks = []
+    seen_centers = []
+    for c in candidates:
+        center = c["center_sec"]
+        if any(abs(center - sc) < 65.0 for sc in seen_centers):
+            continue
+        seen_centers.append(center)
+
+        w_start = max(0.0, round(center - 12.0, 1))
+        w_end = min(duration, round(w_start + 36.0, 1))
+        dur = round(w_end - w_start, 1)
+
+        val_norm = min(1.0, max(0.0, c["value"]))
+        virality = min(99, max(85, int(88 + val_norm * 11)))
+        rank = len(peaks) + 1
+
+        peaks.append({
+            "rank": rank,
+            "center_sec": round(center, 1),
+            "start": w_start,
+            "end": w_end,
+            "duration": dur,
+            "heatmap_value": round(val_norm, 3),
+            "virality_score": virality,
+            "source": "heatmap",
+            "reason": f"🔥 Most Replayed Heatmap Peak ({int(val_norm * 100)}% Re-watch Intensity)",
+            "title": f"Rank #{rank} • 🔥 MOST REPLAYED MOMENT ON STREAM",
+            "badge_color": "#EF4444" if rank <= 2 else "#F59E0B"
+        })
+        if len(peaks) >= top_k:
+            break
+
+    return peaks
+
+def fetch_stream_transcript(
+    info: Dict[str, Any],
+    preferred_langs: Tuple[str, ...] = ("en", "en-orig", "en-US", "en-GB", "hi")
+) -> List[Dict[str, Any]]:
+    """
+    FAST ZERO-DOWNLOAD TRANSCRIPT EXTRACTOR:
+    Fetches official or auto-generated subtitle tracks (JSON3 or VTT) directly from stream metadata.
+    Parses and sanitizes timestamped spoken dialogue in 100-300ms without audio downloads.
+    """
+    sub_sources = [info.get("subtitles") or {}, info.get("automatic_captions") or {}]
+    target_formats = None
+
+    for src in sub_sources:
+        if not src or not isinstance(src, dict):
+            continue
+        for lang in preferred_langs:
+            if lang in src and src[lang]:
+                target_formats = src[lang]
+                break
+        if target_formats:
+            break
+        # If preferred langs not found, pick first available language track
+        if not target_formats and src:
+            for k, v in src.items():
+                if v:
+                    target_formats = v
+                    break
+        if target_formats:
+            break
+
+    if not target_formats:
+        return []
+
+    # 1. Prefer JSON3 for fast structured word/segment timings
+    json3_url = None
+    vtt_url = None
+    for fmt in target_formats:
+        ext = fmt.get("ext", "")
+        if ext == "json3" and fmt.get("url"):
+            json3_url = fmt["url"]
+            break
+        elif ext == "vtt" and fmt.get("url") and not vtt_url:
+            vtt_url = fmt["url"]
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    if json3_url:
+        try:
+            req = urllib.request.Request(json3_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                events = data.get("events", [])
+                segments = []
+                for ev in events:
+                    t_start = float(ev.get("tStartMs", 0)) / 1000.0
+                    d_dur = float(ev.get("dDurationMs", 0)) / 1000.0
+                    segs = ev.get("segs", [])
+                    raw_text = "".join(s.get("utf8", "") for s in segs)
+                    clean_text = re.sub(r'\[(?:Music|Applause|Laughter)\]', '', raw_text, flags=re.IGNORECASE)
+                    clean_text = re.sub(r'[♪♫\r\n]+', ' ', clean_text).strip()
+                    if clean_text and len(clean_text) >= 2:
+                        segments.append({
+                            "start": round(t_start, 2),
+                            "end": round(t_start + max(0.4, d_dur), 2),
+                            "text": clean_text
+                        })
+                if segments:
+                    return segments
+        except Exception as e:
+            print(f"[Stream Loader] JSON3 caption fetch failed: {e}")
+
+    if vtt_url:
+        try:
+            req = urllib.request.Request(vtt_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                vtt_text = resp.read().decode("utf-8", errors="ignore")
+                segments = []
+                # Match VTT timestamps e.g. 00:01:23.450 --> 00:01:26.780
+                cue_pattern = re.compile(
+                    r'(?:(\d{1,2}):)?(\d{2}):(\d{2}\.\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2}\.\d{3})'
+                )
+                lines = vtt_text.splitlines()
+                idx = 0
+                while idx < len(lines):
+                    line = lines[idx].strip()
+                    m = cue_pattern.search(line)
+                    if m:
+                        def _to_sec(h, mn, s):
+                            h_val = float(h) if h else 0.0
+                            return h_val * 3600.0 + float(mn) * 60.0 + float(s)
+                        s_time = _to_sec(m.group(1), m.group(2), m.group(3))
+                        e_time = _to_sec(m.group(4), m.group(5), m.group(6))
+                        # Read text lines following the timestamp cue
+                        text_parts = []
+                        idx += 1
+                        while idx < len(lines) and lines[idx].strip() and "-->" not in lines[idx]:
+                            t_line = lines[idx].strip()
+                            # Strip tags like <c>, </c>, <00:00:00.000>
+                            t_clean = re.sub(r'<[^>]+>', '', t_line)
+                            t_clean = re.sub(r'\[(?:Music|Applause|Laughter)\]', '', t_clean, flags=re.IGNORECASE)
+                            t_clean = re.sub(r'[♪♫\r\n]+', ' ', t_clean).strip()
+                            if t_clean:
+                                text_parts.append(t_clean)
+                            idx += 1
+                        combined = " ".join(text_parts).strip()
+                        # Deduplicate repeating caption lines
+                        if combined and (not segments or segments[-1]["text"] != combined):
+                            segments.append({
+                                "start": round(s_time, 2),
+                                "end": round(e_time, 2),
+                                "text": combined
+                            })
+                    else:
+                        idx += 1
+                if segments:
+                    return segments
+        except Exception as e:
+            print(f"[Stream Loader] VTT caption fetch failed: {e}")
+
+    return []
 
 def download_stream_slice(
     url: str,
@@ -745,6 +955,17 @@ def hunt_stream_viral_moments(
             if max(s, os) < min(e, oe):
                 return True
         return False
+
+    # 0. High-Priority Heatmap Peaks (Audience Re-watch Intensity from YouTube)
+    cached_info = _PROBED_INFO_CACHE.get(url)
+    if cached_info and cached_info.get("heatmap"):
+        heatmap_peaks = extract_heatmap_peaks(cached_info, duration, top_k=8)
+        for hp in heatmap_peaks:
+            s = hp["start"]
+            e = hp["end"]
+            if not is_overlap(s, e):
+                seen_ranges.append((s, e))
+                moments.append(hp)
 
     # 1. Prioritize Real Acoustic Energy Peaks (if audio was scanned)
     if audio_peaks:

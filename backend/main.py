@@ -547,51 +547,139 @@ def api_stream_progress():
 @app.post("/api/scan_stream_audio")
 def api_scan_stream_audio(req: ProbeStreamReq):
     """
-    AUDIO-FIRST SYNERGY PIPELINE (OpusClip / Klap Architecture):
-    1. Downloads ONLY the lightweight compressed stream audio track (~25-40 MB) in 3-6 seconds.
-    2. Runs acoustic RMS energy peak analysis to find real screaming/laughter moments.
-    3. SYNERGY: Transcribes each peak region with Whisper to get actual dialogue for real titles.
-    4. Returns the top ranked viral moments WITH real dialogue-based titles.
+    STORY-FIRST STREAM DISCOVERY PIPELINE (OpusClip / Klap Architecture):
+    1. Zero-Download Fast Path: Probes stream metadata and extracts native YouTube heatmap + subtitles.
+       If captions exist, sends candidate peak windows directly to Qwen3:8b for instant story curation.
+    2. Fallback Synergy Path (for Kick/Twitch or videos without native captions):
+       Downloads lightweight compressed audio (~25-40MB), scans acoustic excitement peaks,
+       transcribes peak regions with Whisper, and curates via Qwen3 Story Mind.
     """
     try:
-        from backend.stream_loader import probe_stream, download_stream_audio, scan_audio_energy_peaks, hunt_stream_viral_moments, transcribe_audio_peaks
+        from backend.stream_loader import (
+            probe_stream, download_stream_audio, scan_audio_energy_peaks,
+            hunt_stream_viral_moments, transcribe_audio_peaks,
+            fetch_stream_transcript, extract_heatmap_peaks, _PROBED_INFO_CACHE
+        )
+        from backend.llm_engine import curate_story_clips_from_windows
+
+        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 10, "step": "Probing stream metadata & audience signals..."}
         meta = probe_stream(req.url)
         dur = meta.get("duration", 0)
-        
-        CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 10, "step": "Connecting to audio channel (fast mode)..."}
+        cached_info = _PROBED_INFO_CACHE.get(req.url) or {}
+
+        # FAST PATH: Check if native transcript and heatmap/chapters are available
+        transcript_segs = fetch_stream_transcript(cached_info)
+        heatmap_peaks = extract_heatmap_peaks(cached_info, duration=dur, top_k=10)
+
+        if transcript_segs and (heatmap_peaks or meta.get("chapters")):
+            CURRENT_STATE["stream_progress"] = {
+                "status": "processing",
+                "percent": 45,
+                "step": f"Found native captions ({len(transcript_segs)} segments) & audience heatmap! Running Story Curation with Qwen3..."
+            }
+
+            windows = []
+            peak_sources = heatmap_peaks if heatmap_peaks else []
+            if not peak_sources and meta.get("chapters"):
+                for ch_idx, ch in enumerate(meta["chapters"][:8], 1):
+                    ch_c = (ch["start"] + ch["end"]) / 2
+                    peak_sources.append({
+                        "rank": ch_idx,
+                        "center_sec": round(ch_c, 1),
+                        "start": ch["start"],
+                        "end": ch["end"],
+                        "virality_score": 90,
+                        "source": "chapter"
+                    })
+
+            for w_idx, p in enumerate(peak_sources[:12], 1):
+                p_center = float(p.get("center_sec", 0.0))
+                w_start = max(0.0, p_center - 35.0)
+                w_end = min(dur, p_center + 40.0)
+
+                matching = [
+                    s for s in transcript_segs
+                    if float(s.get("end", 0)) >= w_start and float(s.get("start", 0)) <= w_end
+                ]
+                t_lines = [f"[{float(s.get('start', 0)):.1f}s] {s.get('text', '').strip()}" for s in matching if s.get("text")]
+                spoken_text = " ".join(s.get("text", "").strip() for s in matching)
+
+                windows.append({
+                    "window_id": w_idx,
+                    "source": p.get("source", "heatmap"),
+                    "peak_score": int(p.get("virality_score", 90)),
+                    "center_sec": p_center,
+                    "start_bound": w_start,
+                    "end_bound": w_end,
+                    "transcript_lines": t_lines,
+                    "spoken_text": spoken_text
+                })
+
+            CURRENT_STATE["stream_progress"] = {
+                "status": "processing",
+                "percent": 75,
+                "step": "Single-pass story arc evaluation with Qwen3..."
+            }
+
+            curated_clips, curation_reason = curate_story_clips_from_windows(
+                windows=windows,
+                video_duration=dur,
+                target_count=8,
+                min_duration=15.0,
+                max_duration=48.0
+            )
+
+            if curated_clips:
+                CURRENT_STATE["peak_transcriptions"] = {
+                    str(round(c.get("start", 0), 1)): c.get("title", "")
+                    for c in curated_clips
+                }
+                CURRENT_STATE["stream_progress"] = {
+                    "status": "completed",
+                    "percent": 100,
+                    "step": f"Curated {len(curated_clips)} viral stories with Qwen3 in seconds (Zero Download)!"
+                }
+                return {
+                    "status": "success",
+                    "meta": meta,
+                    "viral_candidates": curated_clips,
+                    "audio_size_mb": 0,
+                    "mode": "story_first_zero_download"
+                }
+
+        # FALLBACK PATH: Download lightweight compressed audio for Kick/Twitch/no-caption VODs
+        CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": 20, "step": "Pulling audio channel for acoustic analysis..."}
         def cb(pct, msg):
             CURRENT_STATE["stream_progress"] = {"status": "downloading", "percent": pct, "step": msg}
-            
+
         audio_res = download_stream_audio(req.url, output_dir=TEMP_DIR, progress_callback=cb)
-        
-        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 82, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
+
+        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 70, "step": "Scanning acoustic excitement & energy peaks across full stream..."}
         peaks = scan_audio_energy_peaks(audio_res["audio_path"], duration=dur)
-        
-        # SYNERGY PIPELINE: Transcribe each peak region for real dialogue-based titles
-        # This is what makes the difference between "INSANE REACTION" and "BRO FOUND A PEEING NPC 💀"
+
         if peaks:
             n_peaks = len(peaks)
             CURRENT_STATE["stream_progress"] = {
                 "status": "processing",
-                "percent": 85,
-                "step": f"Transcribing {n_peaks} peak moments with Whisper for real context... (~{n_peaks * 25}s)"
+                "percent": 82,
+                "step": f"Transcribing {n_peaks} peak moments with Whisper for real context..."
             }
             try:
                 peaks = transcribe_audio_peaks(audio_res["audio_path"], peaks, progress_callback=cb)
             except Exception as trans_err:
                 print(f"[WARN] Peak transcription failed, using energy-only titles: {trans_err}")
-        
-        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 97, "step": "Combining chat signals & chapter markers..."}
+
+        CURRENT_STATE["stream_progress"] = {"status": "processing", "percent": 95, "step": "Combining chat signals & chapter markers..."}
         moments = hunt_stream_viral_moments(req.url, dur, meta=meta, audio_peaks=peaks)
         if not isinstance(moments, list):
             moments = []
-        
+
         # Store peak transcriptions in state so slice loading can reuse them
         CURRENT_STATE["peak_transcriptions"] = {
             str(round(p.get("start", 0), 1)): p.get("spoken_text", "")
             for p in peaks if p.get("has_transcript")
         }
-        
+
         CURRENT_STATE["stream_progress"] = {"status": "completed", "percent": 100, "step": f"Found {len(moments)} viral moments with real dialogue context!"}
         return {
             "status": "success",
@@ -718,11 +806,11 @@ def get_llm_status():
         "online": online,
         "models": models,
         "preferred_model": preferred,
-        "recommended": "llama3.2:1b"
+        "recommended": "qwen3:8b"
     }
 
 class PullModelReq(BaseModel):
-    model_name: str = "llama3.2:1b"
+    model_name: str = "qwen3:8b"
 
 @app.post("/api/llm/pull")
 def pull_llm_model(req: PullModelReq):

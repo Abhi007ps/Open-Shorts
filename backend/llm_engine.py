@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import re
 import urllib.request
@@ -32,69 +32,111 @@ def get_installed_llm_models(timeout: float = 3.0) -> List[str]:
 
 def get_preferred_llama_model() -> Optional[str]:
     """
-    Selects the best available local LLM model for viral clip titling.
-    On CPU-based local setups, prioritizes ultra-fast lightweight models (qwen2.5:0.5b / qwen2.5:1.5b / llama3.2:1b)
-    to guarantee snappy 2-4 second inference without timeouts or CPU stalls.
+    Selects the best available local LLM model for viral clip titling and story curation.
+    Prioritizes high-intelligence models with native JSON and instruction support:
+    qwen3:8b, qwen3:14b, gemma4:12b, qwen3:4b, followed by lightweight fallbacks.
     """
     installed = get_installed_llm_models()
     if not installed:
         return None
 
     priority = [
-        "qwen2.5:0.5b",
+        "qwen3:8b",
+        "qwen3:14b",
+        "gemma4:12b",
+        "qwen3:4b",
+        "phi4-mini",
+        "qwen2.5:7b",
+        "llama3.1:8b",
+        "qwen2.5:3b",
+        "llama3.2:3b",
         "qwen2.5:1.5b",
         "llama3.2:1b",
-        "llama3.2:latest",
-        "qwen2.5:3b",
         "qwen3.5:4b",
-        "llama3.2:3b",
-        "llama3.1:8b",
-        "llama3.1:latest",
-        "llama3.1",
-        "llama3.2",
-        "mistral:7b"
+        "qwen2.5:0.5b"
     ]
     for p in priority:
         for m in installed:
-            if m == p or m.startswith(p):
+            if m == p or m.startswith(p + ":") or m.startswith(p):
                 return m
 
     return installed[0] if installed else None
 
-def query_ollama(prompt: str, system_prompt: str = "", model: Optional[str] = None, timeout: float = 60.0) -> Optional[str]:
-    """Sends an inference request to Ollama with low temperature for deterministic JSON output."""
+def query_ollama(
+    prompt: str,
+    system_prompt: str = "",
+    model: Optional[str] = None,
+    timeout: float = 120.0,
+    num_predict: int = 1400,
+    json_mode: bool = True
+) -> Optional[str]:
+    """
+    Sends an inference request to Ollama using /api/chat with think: false and format: json.
+    If older Ollama daemon returns HTTP 400 (unsupported think parameter), retries once without think.
+    Strips accidental <think>...</think> blocks from output.
+    """
     chosen_model = model or get_preferred_llama_model()
     if not chosen_model:
         return None
 
-    url = f"{OLLAMA_BASE_URL}/api/generate"
-    # qwen3.5:4b can handle larger contexts; give it room for better titles
-    is_large_model = any(tag in chosen_model for tag in ["qwen3.5", "qwen2.5:7b", "llama3.1:8b", "llama3.2:3b", "mistral:7b"])
-    payload = {
+    url = f"{OLLAMA_BASE_URL}/api/chat"
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    payload: Dict[str, Any] = {
         "model": chosen_model,
-        "prompt": prompt,
-        "system": system_prompt,
+        "messages": messages,
         "stream": False,
+        "think": False,
         "keep_alive": "30m",
         "options": {
-            "temperature": 0.1,
+            "temperature": 0.2,
             "top_p": 0.9,
-            "num_predict": 150 if is_large_model else 90,
-            "num_ctx": 2048 if is_large_model else 1024
+            "num_predict": num_predict,
+            "num_ctx": 8192
         }
     }
+    if json_mode:
+        payload["format"] = "json"
 
-    try:
+    def _execute(req_payload: dict) -> Optional[str]:
+        req_data = json.dumps(req_payload).encode("utf-8")
         req = urllib.request.Request(
             url,
-            data=json.dumps(payload).encode("utf-8"),
+            data=req_data,
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return data.get("response", "").strip()
+            content = data.get("message", {}).get("content", "")
+            cleaned = re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
+            return cleaned
+
+    try:
+        return _execute(payload)
+    except urllib.error.HTTPError as he:
+        # If older Ollama returns HTTP 400 due to top-level "think" field
+        if he.code == 400 and "think" in payload:
+            try:
+                retry_payload = dict(payload)
+                del retry_payload["think"]
+                if "qwen3" in chosen_model.lower():
+                    retry_messages = list(messages)
+                    retry_messages[-1] = {
+                        "role": "user",
+                        "content": retry_messages[-1]["content"] + "\n/no_think"
+                    }
+                    retry_payload["messages"] = retry_messages
+                return _execute(retry_payload)
+            except Exception as e2:
+                print(f"[LLM Engine] Ollama retry without think failed: {e2}")
+                return None
+        print(f"[LLM Engine] Ollama HTTP error: {he}")
+        return None
     except Exception as e:
-        print(f"[LLM Engine] Ollama generation failed: {e}")
+        print(f"[LLM Engine] Ollama chat failed: {e}")
         return None
 
 # =====================================================================
@@ -106,7 +148,7 @@ VIRAL_ENTITY_CATEGORIES = {
         "keywords": ["homeless", "beggar", "money", "20000", "20,000", "20k", "thousand", "dollars", "cash", "give him", "donate", "poor", "rich", "kindness"],
         "titles": [
             "HE GAVE $20,000 TO A HOMELESS NPC 😭❤️",
-            "STREAMER SHOWS CRAZY KINDNESS IN GTA 6 🥺❤️",
+            "STREAMER SHOWS CRAZY KINDNESS TO AN NPC 🥺❤️",
             "HE GAVE ALL HIS MONEY TO THIS NPC 😭🔥",
             "BRO HELPED A HOMELESS NPC AND THIS HAPPENED 🥺💀",
             "THIS IS WHY EVERYONE LOVES THIS STREAMER 🥺❤️"
@@ -115,78 +157,78 @@ VIRAL_ENTITY_CATEGORIES = {
     "backflip_stunt": {
         "keywords": ["backflip", "flip", "stunt", "jump", "parkour", "roof", "trick", "first streamer", "physics", "first person to"],
         "titles": [
-            "FIRST STREAMER TO DO A BACKFLIP IN GTA 6?! 💀🔥",
+            "FIRST STREAMER TO DO A BACKFLIP?! 💀🔥",
             "BRO TRIED A BACKFLIP AND THIS HAPPENED 😭💀",
-            "THE MOST INSANE STUNT IN GTA 6 HISTORY 🤯🔥",
+            "THE MOST INSANE STUNT IN STREAM HISTORY 🤯🔥",
             "NO WAY HE PULLED OFF THIS BACKFLIP 💀🏆",
-            "PHYSICS IN GTA 6 ARE ACTUALLY BROKEN 😭🔥"
+            "PHYSICS IN THIS GAME ARE ACTUALLY BROKEN 😭🔥"
         ]
     },
     "npc_bizarre": {
         "keywords": ["peeing", "pee", "piss", "pitch this much", "bathroom", "toilet", "wall", "weirdest npc", "npc doing", "caught npc", "strange npc", "urinat", "wash his hand", "wash his hands", "watch his hand", "tank you got"],
         "titles": [
-            "CAUGHT AN NPC DOING THIS IN GTA 6 💀😭",
-            "BRO FOUND THE WEIRDEST NPC IN GTA 6 😭💀",
+            "CAUGHT AN NPC DOING THIS IN 4K 💀😭",
+            "BRO FOUND THE WEIRDEST NPC ON STREAM 😭💀",
             "HE CAUGHT THIS NPC IN 4K 💀📸",
-            "THIS GTA 6 NPC HAS NO SHAME 😭💀",
-            "I CANNOT BELIEVE ROCKSTAR ADDED THIS NPC 💀"
+            "THIS NPC HAS ZERO CHILL 😭💀",
+            "CANNOT BELIEVE THE DEVS ADDED THIS NPC 💀"
         ]
     },
     "animal_wildlife": {
         "keywords": ["chameleon", "lizard", "reptile", "roadkill", "alligator", "gator", "crocodile", "dog", "cat", "animal", "snake", "creature"],
         "titles": [
             "BRO ENCOUNTERED A ROADKILL CHAMELEON 😭💀",
-            "HE FOUND THE RAREST ANIMAL IN GTA 6 💀🦎",
-            "BRO COULD NOT BELIEVE THIS ANIMAL IN GTA 6 😭",
-            "GTA 6 WILDLIFE IS ACTUALLY OUT OF CONTROL 💀🔥",
-            "HE ACCIDENTALLY RAN OVER THIS IN GTA 6 💀😭"
+            "HE FOUND THE RAREST ANIMAL IN THE GAME 💀🦎",
+            "BRO COULD NOT BELIEVE THIS ANIMAL 😭",
+            "WILDLIFE IN THIS GAME IS ACTUALLY OUT OF CONTROL 💀🔥",
+            "HE ACCIDENTALLY RAN OVER THIS ANIMAL 💀😭"
         ]
     },
     "police_chase": {
         "keywords": ["police", "cop", "cops", "5 star", "5-star", "five star", "wanted", "busted", "siren", "chase", "swat", "arrested", "prison", "jail"],
         "titles": [
             "5-STAR WANTED LEVEL ESCAPE GONE WRONG 💀🚔",
-            "BRO TRIED TO ESCAPE THE COPS IN GTA 6 😭🚔",
+            "BRO TRIED TO ESCAPE THE COPS 😭🚔",
             "HE GOT 5 STARS IN 10 SECONDS 💀🚨",
             "THE POLICE DID NOT LET THAT SLIDE 💀🚔",
-            "FASTEST 5-STAR BUSTED IN GTA 6 HISTORY 😭💀"
+            "FASTEST 5-STAR BUSTED IN STREAM HISTORY 😭💀"
         ]
     },
     "car_crash": {
         "keywords": ["car", "ferrari", "lambo", "lamborghini", "sports car", "supercar", "crash", "crashed", "driving", "drift", "engine", "vehicle", "wrecked", "speeding"],
         "titles": [
-            "BRO CRASHED A SUPERCAR IN GTA 6 💀🏎️",
-            "DRIVING AT MAX SPEED IN GTA 6 GONE WRONG 😭🔥",
+            "BRO CRASHED A SUPERCAR 💀🏎️",
+            "DRIVING AT MAX SPEED GONE WRONG 😭🔥",
             "BRO COMPLETELY TOTALED HIS CAR 💀😭",
-            "THE MOST EXPENSIVE CAR CRASH IN GTA 6 💀🏎️",
-            "HE TESTED GTA 6 CAR CRASH PHYSICS 🤯💀"
+            "THE MOST EXPENSIVE CAR CRASH ON STREAM 💀🏎️",
+            "HE TESTED CAR CRASH PHYSICS 🤯💀"
         ]
     },
     "grandma_npc": {
         "keywords": ["grandma", "grandpa", "old lady", "old woman", "elderly", "granny"],
         "titles": [
-            "BRO RAN INTO A GTA 6 GRANDMA 💀😭",
-            "THIS GTA 6 GRANDMA IS DANGEROUS 😭💀",
+            "BRO RAN INTO A CRAZY GRANDMA NPC 💀😭",
+            "THIS GRANDMA NPC IS ACTUALLY DANGEROUS 😭💀",
             "HE REALLY FOUGHT A GRANDMA ON STREAM 💀",
-            "GTA 6 GRANDMA SHOWED HIM WHO IS BOSS 😭💀"
+            "GRANDMA NPC SHOWED HIM WHO IS BOSS 😭💀"
         ]
     },
     "glitch_easter_egg": {
         "keywords": ["glitch", "bug", "broken", "flying", "through floor", "easter egg", "secret", "hidden", "unreal", "teleport"],
         "titles": [
-            "BRO FOUND A GAME-BREAKING GLITCH IN GTA 6 🤯💀",
-            "GTA 6 PHYSICS BROKE COMPLETELY 😭💀",
-            "HE DISCOVERED A SECRET EASTER EGG IN GTA 6 🤫🔥",
-            "THIS GTA 6 GLITCH IS ACTUALLY INSANE 💀"
+            "BRO FOUND A GAME-BREAKING GLITCH 🤯💀",
+            "GAME PHYSICS BROKE COMPLETELY 😭💀",
+            "HE DISCOVERED A SECRET EASTER EGG 🤫🔥",
+            "THIS GAME GLITCH IS ACTUALLY INSANE 💀"
         ]
     },
     "npc_dialogue": {
         "keywords": ["flat ass", "stick up", "get out", "back off", "leave me alone", "what are you doing", "stop following me", "you're crazy"],
         "titles": [
-            "GTA 6 NPC SAID WHAT 💀🤣",
+            "NPC SAID WHAT TO HIM 💀🤣",
             "BRO THIS NPC HAS NO FILTER 💀😭",
-            "GTA 6 NPC ROASTED HIM IN 4K 😭💀",
-            "ROCKSTAR REALLY ADDED THIS NPC DIALOGUE 💀"
+            "NPC ROASTED HIM IN 4K 😭💀",
+            "DEVS REALLY ADDED THIS NPC DIALOGUE 💀"
         ]
     },
     "streamer_rage_quit": {
@@ -201,19 +243,19 @@ VIRAL_ENTITY_CATEGORIES = {
     "discovery_reaction": {
         "keywords": ["look at this", "look at that", "over here", "found it", "check this out", "what is this", "what's this", "oh wow", "oh whoa", "did you see"],
         "titles": [
-            "HE FOUND SOMETHING INSANE IN GTA 6 💀🔥",
+            "HE FOUND SOMETHING INSANE ON STREAM 💀🔥",
             "BRO DISCOVERED THIS HIDDEN DETAIL 🤯💀",
-            "NOBODY NOTICED THIS IN GTA 6 💀",
-            "GTA 6 DETAIL THAT BREAKS YOUR BRAIN 😭🔥"
+            "NOBODY NOTICED THIS DETAIL BEFORE 💀",
+            "SECRET DETAIL THAT BREAKS YOUR BRAIN 😭🔥"
         ]
     },
     "money_spending": {
         "keywords": ["buy", "bought", "spend", "spent", "cost", "price", "expensive", "million", "billion", "thousand", "dollar", "money", "cash", "pay"],
         "titles": [
-            "HE SPENT HOW MUCH ON THIS IN GTA 6?! 💀😭",
-            "BRO WENT COMPLETELY BROKE IN GTA 6 😭💀",
-            "THE MOST EXPENSIVE PURCHASE IN GTA 6 💀🤑",
-            "THIS IS WHY HE HAS NO MONEY IN GTA 6 😭🔥"
+            "HE SPENT HOW MUCH ON THIS?! 💀😭",
+            "BRO WENT COMPLETELY BROKE 😭💀",
+            "THE MOST EXPENSIVE PURCHASE ON STREAM 💀🤑",
+            "THIS IS WHY HE HAS NO MONEY LEFT 😭🔥"
         ]
     }
 }
@@ -328,12 +370,10 @@ def evaluate_narrative_micro_arc(
     spoken_phrases = []
 
     if matching_subs:
-        # Snap start to first spoken word near start_t with -40ms vocal attack lead
         first_sub_start = float(matching_subs[0].get("start", start_t))
         if abs(first_sub_start - start_t) <= 3.0:
             hook_word_start = max(0.0, first_sub_start - 0.04)
 
-        # Snap end to final spoken word punchline (+0.35s reaction snap)
         last_sub_end = float(matching_subs[-1].get("end", end_t))
         if last_sub_end > climax_t and (last_sub_end - climax_t) <= 6.0:
             punchline_end = last_sub_end + 0.35
@@ -345,7 +385,6 @@ def evaluate_narrative_micro_arc(
 
     full_speech = " ".join(spoken_phrases)
 
-    # Check for stream housekeeping rejection
     is_housekeeping = False
     rejection_reason = None
     for pattern in HOUSEKEEPING_PATTERNS:
@@ -354,7 +393,6 @@ def evaluate_narrative_micro_arc(
             rejection_reason = f"Filtered mundane stream housekeeping ({pattern})"
             break
 
-    # Retention hook quality calculation (0-100)
     hook_score = 85
     if len(matching_subs) >= 2:
         hook_score += 6
@@ -393,7 +431,7 @@ def refine_clip_with_llm(
     model: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Uses local Llama 3.2 (or Cognitive Heuristic Engine on standby) to evaluate narrative arc,
+    Uses local LLM (or Cognitive Heuristic Engine on standby) to evaluate narrative arc,
     prune stream housekeeping/alerts, snap setup and punchline boundaries, and generate a viral title.
     """
     start_t = float(clip.get("start", 0))
@@ -428,7 +466,6 @@ def refine_clip_with_llm(
     # 3. If local Ollama daemon is active, prompt LLM for custom bespoke titling
     if is_ollama_online():
         full_speech = arc['full_speech']
-        # Extract punchline (last third = climax/punchline)
         words = full_speech.split()
         punchline = " ".join(words[max(0, len(words)*2//3):min(len(words), len(words)*2//3 + 10)])
         prompt = f"""Gaming clip title expert. Streamer said:
@@ -438,14 +475,14 @@ def refine_clip_with_llm(
 Punchline: "{punchline}"
 
 Write ONE viral title that:
-- Uses EXACT words/actions from the dialogue (NOT "INSANE REACTION" or generic filler)
+- Uses EXACT words/actions from the dialogue (NOT generic filler like "INSANE REACTION")
 - ALL-CAPS with 1-2 emojis from: 💀 😭 🔥 🤯
 - Under 50 characters
 
 Output ONLY JSON:
 {{"viral_title": "DIALOGUE-BASED TITLE 💀", "punchline_summary": "What happened", "hook_score": 92}}"""
 
-        resp_str = query_ollama(prompt, system_prompt="", model=model, timeout=60.0)
+        resp_str = query_ollama(prompt, system_prompt="", model=model, timeout=40.0)
         if resp_str:
             try:
                 m = re.search(r"\{[\s\S]*\}", resp_str)
@@ -474,7 +511,7 @@ def batch_refine_clips_with_llm(
     max_duration: float = 45.0,
     model: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """Refines candidate clips sequentially using local Llama 3.2 with Cognitive NLP standby."""
+    """Refines candidate clips sequentially using local LLM with Cognitive NLP standby."""
     refined = []
     for c in clips:
         rc = refine_clip_with_llm(
@@ -490,12 +527,242 @@ def batch_refine_clips_with_llm(
 
     for idx, c in enumerate(refined):
         c["rank"] = idx + 1
-        # Update title rank prefix if present
         if "•" in c.get("title", ""):
             parts = c["title"].split("•", 1)
             c["title"] = f"Rank #{idx + 1} •{parts[1]}"
 
     return refined if refined else clips
+
+# =====================================================================
+# Single-Pass Story Curation Engine (Story-First Architecture)
+# =====================================================================
+
+def curate_story_clips_from_windows(
+    windows: List[Dict[str, Any]],
+    video_duration: float,
+    target_count: int = 8,
+    min_duration: float = 15.0,
+    max_duration: float = 50.0,
+    model: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    SINGLE-PASS STORY CURATION PIPELINE:
+    Takes up to 12 candidate stream windows (centered at heatmap peaks, chat velocity spikes,
+    or audio outbursts) with timestamped dialogue lines.
+    Sends all candidate windows in ONE single /api/chat call to Qwen3:8b.
+    Selects top micro-stories with complete narrative arcs (Hook -> Buildup -> Climax/Punchline),
+    determines clean boundary timestamps [start_sec, end_sec], and writes high-CTR curiosity-gap titles.
+    """
+    if not windows:
+        return [], "No candidate windows provided."
+
+    max_eval = min(len(windows), 12)
+    eval_windows = windows[:max_eval]
+
+    # Cognitive NLP fallback builder in case Ollama is offline or returns invalid output
+    def _cognitive_fallback() -> Tuple[List[Dict[str, Any]], str]:
+        results = []
+        for idx, w in enumerate(eval_windows[:target_count], 1):
+            w_id = w.get("window_id", idx)
+            center = float(w.get("center_sec", (w.get("start_bound", 0) + w.get("end_bound", 30)) / 2))
+            s_bound = float(w.get("start_bound", max(0.0, center - 20.0)))
+            e_bound = float(w.get("end_bound", min(video_duration, center + 25.0)))
+            
+            # Default window ~32s centered near peak
+            c_start = max(s_bound, round(center - 10.0, 1))
+            c_end = min(e_bound, round(c_start + 32.0, 1))
+            if (c_end - c_start) < min_duration:
+                c_end = min(video_duration, c_start + min_duration)
+
+            speech_text = w.get("spoken_text") or " ".join(w.get("transcript_lines", []))
+            reason = str(w.get("source", "Highlight peak"))
+            v_title = synthesize_curiosity_gap_title(speech_text, reason, rank=idx)
+
+            results.append({
+                "window_id": w_id,
+                "rank": idx,
+                "title": f"Rank #{idx} • {v_title}",
+                "start": round(c_start, 1),
+                "end": round(c_end, 1),
+                "duration": round(c_end - c_start, 1),
+                "climax_t": round(center, 1),
+                "virality_score": int(min(99, max(80, int(w.get("peak_score", 85))))),
+                "reason": f"⚡ Story-First Climax ({w.get('source', 'Peak')})",
+                "badge_color": "#EF4444" if idx <= 2 else "#F59E0B",
+                "ai_curated": True,
+                "llm_verified": False,
+                "llm_punchline": "Micro-story arc curated via Cognitive NLP standby"
+            })
+        return results, "Curated by Cognitive NLP Standby Engine"
+
+    if not is_ollama_online():
+        print("[LLM Engine] Ollama offline. Executing Cognitive NLP story curation.")
+        return _cognitive_fallback()
+
+    # Format candidate windows for single-pass prompt
+    window_blocks = []
+    for w in eval_windows:
+        wid = w.get("window_id", 1)
+        src = w.get("source", "peak")
+        center = float(w.get("center_sec", 0.0))
+        peak_score = int(w.get("peak_score", 85))
+        s_bound = float(w.get("start_bound", max(0.0, center - 25.0)))
+        e_bound = float(w.get("end_bound", min(video_duration, center + 30.0)))
+        
+        lines = w.get("transcript_lines") or []
+        if not lines and w.get("spoken_text"):
+            lines = [f"[{center:.1f}s] {w.get('spoken_text')}"]
+        
+        preview_text = "\n".join(lines[:12]) if lines else "[No transcript available - acoustic reaction only]"
+        if len(preview_text) > 600:
+            preview_text = preview_text[:600] + "..."
+
+        block = (
+            f"--- WINDOW #{wid} (Source: {src}, Peak at {center:.1f}s, Excitement {peak_score}%) ---\n"
+            f"Allowed Range: {s_bound:.1f}s to {e_bound:.1f}s\n"
+            f"Transcript:\n{preview_text}"
+        )
+        window_blocks.append(block)
+
+    windows_text = "\n\n".join(window_blocks)
+
+    system_prompt = (
+        "You are an Elite Executive Producer for YouTube Shorts & TikTok. "
+        "Your mission is to discover self-contained viral micro-stories from live stream candidate windows. "
+        "A viral short MUST have: "
+        "1. Hook Onset (first 2-3s): Gripping opening statement, unexpected question, or sudden event. "
+        "2. Escalation / Context: Building tension, banter, or gameplay action. "
+        "3. Climax & Punchline: Instant funny or shocking payoff. "
+        "REJECT housekeeping, stream tech setup, mundane silence, or sub/donation alerts."
+    )
+
+    user_prompt = f"""Review these {len(eval_windows)} candidate highlight windows from a stream ({int(video_duration//60)} mins total):
+
+{windows_text}
+
+SELECT up to {target_count} moments that form the most captivating micro-stories.
+For each chosen clip:
+1. Specify exact "start_sec" and "end_sec" within that window's Allowed Range.
+2. Clip duration MUST be between {int(min_duration)}s and {int(max_duration)}s.
+3. Write an ALL-CAPS curiosity-gap "viral_title" that references SPECIFIC dialogue words or actions (NOT generic like "INSANE MOMENT"). Add 1-2 emojis (💀 😭 🔥 🤯 😱 🚔 🏎️).
+4. Provide a brief 1-sentence "punchline_summary".
+
+Respond ONLY in valid JSON matching this schema:
+{{
+  "clips": [
+    {{
+      "window_id": 1,
+      "start_sec": 124.5,
+      "end_sec": 156.0,
+      "viral_title": "HE GAVE $20,000 TO A HOMELESS NPC 😭❤️",
+      "punchline_summary": "Streamer gives all his cash to an NPC who roasts him back.",
+      "hook_score": 94,
+      "virality_score": 96
+    }}
+  ],
+  "editorial_reason": "High emotional engagement with strong punchlines and dialogue hooks."
+}}"""
+
+    chosen_model = model or get_preferred_llama_model()
+    resp_text = query_ollama(
+        prompt=user_prompt,
+        system_prompt=system_prompt,
+        model=chosen_model,
+        timeout=120.0,
+        num_predict=1400,
+        json_mode=True
+    )
+
+    if not resp_text:
+        print("[LLM Engine] Single-pass story curation received no response, using fallback.")
+        return _cognitive_fallback()
+
+    try:
+        m = re.search(r"\{[\s\S]*\}", resp_text)
+        if not m:
+            return _cognitive_fallback()
+
+        parsed = json.loads(m.group(0))
+        raw_clips = parsed.get("clips", [])
+        editorial_reason = parsed.get("editorial_reason", "Curated by Qwen3 Story Mind")
+
+        if not raw_clips or not isinstance(raw_clips, list):
+            return _cognitive_fallback()
+
+        window_map = {w.get("window_id", idx + 1): w for idx, w in enumerate(eval_windows)}
+        selected_clips = []
+        seen_intervals = []
+
+        def _is_overlap(s: float, e: float) -> bool:
+            for os, oe in seen_intervals:
+                if max(s, os) < min(e, oe):
+                    overlap = min(e, oe) - max(s, os)
+                    if (overlap / max(1.0, e - s)) > 0.35 or (overlap / max(1.0, oe - os)) > 0.35:
+                        return True
+            return False
+
+        for item in raw_clips:
+            wid = item.get("window_id")
+            w_orig = window_map.get(wid) or window_map.get(str(wid)) or (eval_windows[0] if eval_windows else {})
+            
+            s_val = float(item.get("start_sec") or w_orig.get("start_bound", 0.0))
+            e_val = float(item.get("end_sec") or (s_val + 32.0))
+
+            # Clamp boundaries
+            s_val = max(0.0, min(video_duration - min_duration, s_val))
+            dur = e_val - s_val
+            if dur < min_duration:
+                e_val = min(video_duration, s_val + min_duration)
+            elif dur > max_duration:
+                e_val = min(video_duration, s_val + max_duration)
+            dur = e_val - s_val
+
+            if _is_overlap(s_val, e_val):
+                continue
+            seen_intervals.append((s_val, e_val))
+
+            rank_idx = len(selected_clips) + 1
+            v_title = str(item.get("viral_title", "")).strip()
+            if not v_title or len(v_title) < 5 or any(g in v_title.lower() for g in ["insane reaction", "crazy moment"]):
+                speech_text = w_orig.get("spoken_text") or " ".join(w_orig.get("transcript_lines", []))
+                v_title = synthesize_curiosity_gap_title(speech_text, str(w_orig.get("source", "peak")), rank=rank_idx)
+            v_title = re.sub(r"^Rank\s*#?\d+\s*•\s*", "", v_title)
+
+            base_virality = int(item.get("virality_score") or w_orig.get("peak_score", 88))
+            virality = min(99, max(75, base_virality + 3))
+
+            selected_clips.append({
+                "window_id": wid,
+                "rank": rank_idx,
+                "title": f"Rank #{rank_idx} • {v_title}",
+                "start": round(s_val, 1),
+                "end": round(e_val, 1),
+                "duration": round(dur, 1),
+                "climax_t": round(float(w_orig.get("center_sec", (s_val + e_val) / 2)), 1),
+                "virality_score": virality,
+                "reason": f"⚡ Story-First Micro-Arc ({w_orig.get('source', 'Peak')})",
+                "badge_color": "#EF4444" if rank_idx <= 2 else "#F59E0B",
+                "ai_curated": True,
+                "llm_verified": True,
+                "llm_punchline": item.get("punchline_summary") or editorial_reason,
+                "metrics": {
+                    "hook_quality": int(item.get("hook_score", 90)),
+                    "voice_energy": int(w_orig.get("peak_score", 85)),
+                    "story_arc": 95
+                }
+            })
+
+            if len(selected_clips) >= target_count:
+                break
+
+        if selected_clips:
+            print(f"[LLM Engine] Single-Pass Story Curation succeeded with {len(selected_clips)} clips on model {chosen_model}")
+            return selected_clips, editorial_reason
+
+    except Exception as parse_err:
+        print(f"[LLM Engine] Failed parsing story curation JSON: {parse_err}")
+
+    return _cognitive_fallback()
 
 def curate_auto_viral_clips(
     candidates: List[Dict[str, Any]],
@@ -505,135 +772,68 @@ def curate_auto_viral_clips(
     model: Optional[str] = None
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
-    LLM Unified Mind Executive Producer:
+    LLM Story-First Executive Producer:
     Reviews candidate moments from multimodal sensory detection.
-    Evaluates dialogue, emotional climax, streamer interaction, and retention potential
-    to decide the optimal number of insane-virality clips that should be produced.
-    Prunes lukewarm filler and returns moments with true viral payoff and active streamer reaction.
+    Prepares candidate windows with timestamped subtitle dialogue and invokes
+    curate_story_clips_from_windows in a single-pass request to Qwen3:8b.
     """
     if not candidates:
         return [], None
 
-    target_n = target_count or max(3, min(14, int(video_duration / 250)))
+    target_n = target_count or max(3, min(12, int(video_duration / 250)))
 
-    # If Ollama is offline or standby, execute Cognitive NLP heuristic curation
-    if not is_ollama_online():
-        print("[LLM Engine] Ollama standby mode active. Running Cognitive NLP Curation Engine.")
-        approved_clips = []
-        for idx, c in enumerate(candidates[:max(target_n + 3, 10)], 1):
-            cloned = dict(c)
-            cloned["rank"] = idx
-            refined = refine_clip_with_llm(cloned, subtitles, video_duration, model=model)
-            if not refined.get("is_rejected_by_llm", False):
-                refined["ai_curated"] = True
-                refined["virality_score"] = min(99, refined.get("virality_score", 80) + 6)
-                approved_clips.append(refined)
-                if len(approved_clips) >= target_n:
-                    break
-
-        if not approved_clips and candidates:
-            approved_clips = candidates[:min(target_n, len(candidates))]
-
-        reason = "Cognitive NLP Curated (Curiosity Gaps & Micro-Arc Retention)"
-        return approved_clips, reason
-
-    chosen_model = model or get_preferred_llama_model()
-    if not chosen_model:
-        return candidates[:min(target_n, len(candidates))], "Default sensory ranking"
-
-    eval_candidates = candidates[:min(len(candidates), max(10, target_n + 5))]
-
-    lines = []
-    for idx, c in enumerate(eval_candidates, 1):
+    # Convert candidates into story windows with timestamped dialogue
+    windows = []
+    for idx, c in enumerate(candidates[:max(target_n + 4, 12)], 1):
         c_start = float(c.get("start", 0))
         c_end = float(c.get("end", 0))
         climax_t = float(c.get("climax_t", (c_start + c_end) / 2))
-        
-        c_subs = [
-            s.get("text", "").strip() for s in subtitles
-            if float(s.get("end", 0)) >= max(0.0, climax_t - 6.0) and float(s.get("start", 0)) <= min(video_duration, climax_t + 6.0)
+
+        # Gather timestamped lines within window
+        matching_subs = [
+            s for s in (subtitles or [])
+            if float(s.get("end", 0)) >= max(0.0, climax_t - 14.0) and float(s.get("start", 0)) <= min(video_duration, climax_t + 20.0)
         ]
-        clean_speech = " ".join([txt for txt in c_subs if txt][:4])
-        if not clean_speech:
-            clean_speech = "[Intense non-verbal vocal reaction & gameplay action]"
+        t_lines = []
+        for s in matching_subs[:10]:
+            txt = s.get("text", "").strip()
+            if txt:
+                t_lines.append(f"[{float(s.get('start', 0)):.1f}s] {txt}")
 
-        v_score = int(c.get("virality_score", 80))
-        lines.append(f"Candidate #{idx} (Peak at {climax_t:.1f}s, Excitement {v_score}%): \"{clean_speech[:95]}\"")
+        spoken_text = " ".join(s.get("text", "").strip() for s in matching_subs)
+        windows.append({
+            "window_id": idx,
+            "source": c.get("reaction_category", "Audio Peak"),
+            "peak_score": int(c.get("virality_score", 85)),
+            "center_sec": climax_t,
+            "start_bound": max(0.0, c_start - 4.0),
+            "end_bound": min(video_duration, c_end + 4.0),
+            "transcript_lines": t_lines,
+            "spoken_text": spoken_text,
+            "orig_cand": c
+        })
 
-    cand_text = "\n".join(lines)
-    stream_mins = max(1, int(video_duration / 60))
-    prompt = f"""Review these {len(eval_candidates)} livestream highlight moments from a {stream_mins}-minute gaming stream:
-{cand_text}
+    curated_clips, reason = curate_story_clips_from_windows(
+        windows=windows,
+        video_duration=video_duration,
+        target_count=target_n,
+        min_duration=12.0,
+        max_duration=45.0,
+        model=model
+    )
 
-You are the Executive Producer for YouTube Shorts & TikTok.
-Select the top {target_n} moments with intense streamer reactions (screams, laughter, anger, clutch plays, or funny fails).
-REJECT moments where the streamer is quietly playing or doing boring housekeeping.
-CRITICAL: Include specific entities, subjects or actions from the dialogue in the viral titles (e.g., Homeless, Backflip, Peeing NPC, Chameleon, 5-Star Cops, Crash, Supercar).
-Respond in JSON format:
-{{"selected_candidate_ids": [1, 2, 3, 4], "viral_titles": {{"1": "HE GAVE $20,000 TO A HOMELESS NPC 😭❤️", "2": "FIRST STREAMER TO DO A BACKFLIP IN GTA 6?! 💀🔥"}}, "editorial_reason": "High emotional streamer reactions and funny commentary."}}"""
+    # Re-merge original candidate sensory metrics into curated clips
+    final_clips = []
+    window_cand_map = {w["window_id"]: w["orig_cand"] for w in windows}
 
-    payload = {
-        "model": chosen_model,
-        "prompt": prompt,
-        "stream": False,
-        "keep_alive": "30m",
-        "options": {
-            "temperature": 0.1,
-            "top_p": 0.9,
-            "num_predict": 120,
-            "num_ctx": 1024
-        }
-    }
+    for clip in curated_clips:
+        wid = clip.get("window_id")
+        orig = window_cand_map.get(wid)
+        if orig:
+            merged = dict(orig)
+            merged.update(clip)
+            final_clips.append(merged)
+        else:
+            final_clips.append(clip)
 
-    try:
-        req = urllib.request.Request(
-            f"{OLLAMA_BASE_URL}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=75.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            raw = data.get("response", "").strip()
-
-        m = re.search(r"\{[\s\S]*\}", raw)
-        if m:
-            result = json.loads(m.group(0))
-            selected_ids = result.get("selected_candidate_ids", [])
-            titles = result.get("viral_titles", {})
-            reason = result.get("editorial_reason", "Curated by Llama 3.2 Unified Mind")
-
-            int_ids = []
-            for sid in selected_ids:
-                try:
-                    int_ids.append(int(sid))
-                except Exception:
-                    pass
-
-            approved_clips = []
-            for cid in int_ids:
-                if 1 <= cid <= len(eval_candidates):
-                    cand = eval_candidates[cid - 1]
-                    cand["llm_verified"] = True
-                    cand["ai_curated"] = True
-                    cand["llm_punchline"] = reason
-                    c_title = titles.get(str(cid)) or titles.get(cid)
-                    if c_title and len(c_title) <= 45:
-                        c_title = re.sub(r"^Rank\s*#?\d+\s*•\s*", "", c_title)
-                        cand["title"] = f"Rank #{len(approved_clips)+1} • {c_title}"
-                    cand["virality_score"] = min(99, cand.get("virality_score", 80) + 7)
-                    approved_clips.append(cand)
-
-            if approved_clips:
-                return approved_clips, reason
-
-    except Exception as e:
-        print(f"[LLM Mind] Auto-curation error: {e}")
-
-    # Fallback to Cognitive NLP curation
-    fallback = []
-    for idx, c in enumerate(candidates[:target_n], 1):
-        cloned = dict(c)
-        cloned["rank"] = idx
-        refined = refine_clip_with_llm(cloned, subtitles, video_duration, model=model)
-        fallback.append(refined)
-    return fallback, "Cognitive NLP Multimodal Peak Ranking (LLM Standby)"
+    return final_clips if final_clips else candidates[:target_n], reason
