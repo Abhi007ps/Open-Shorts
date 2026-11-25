@@ -94,9 +94,9 @@ if exist "%VENV_PY%" (
 
 :check_deps
 :: 3. Verify / Install Dependencies
-"!ACTIVE_PY!" -c "import fastapi, uvicorn, pydantic, PIL, aiofiles, yt_dlp" >nul 2>&1
+"!ACTIVE_PY!" -c "import fastapi, uvicorn, pydantic, PIL, aiofiles, yt_dlp, webview" >nul 2>&1
 if !errorlevel! neq 0 (
-    echo [*] Installing required packages: fastapi, uvicorn, pydantic, pillow, aiofiles, yt-dlp...
+    echo [*] Installing required packages: fastapi, uvicorn, pydantic, pillow, aiofiles, yt-dlp, pywebview...
     "!ACTIVE_PY!" -m pip install -r "%~dp0requirements.txt" --quiet
     if !errorlevel! neq 0 (
         echo [*] Retrying package installation with console output...
@@ -110,17 +110,25 @@ if !errorlevel! neq 0 (
     echo [WARN] Bootstrap diagnostic encountered an issue, but attempting launch...
 )
 
-:: Parse arguments for LAN mode
+:: Parse arguments for LAN & Web mode
 set "IS_LAN=0"
-if /i "%~1"=="--lan" set "IS_LAN=1"
-if /i "%~2"=="--lan" set "IS_LAN=1"
+set "IS_WEB=0"
+set "DESKTOP_ARGS="
+for %%A in (%*) do (
+    if /i "%%~A"=="--lan" (
+        set "IS_LAN=1"
+        set "DESKTOP_ARGS=!DESKTOP_ARGS! --lan"
+    )
+    if /i "%%~A"=="--web" (
+        set "IS_WEB=1"
+        set "DESKTOP_ARGS=!DESKTOP_ARGS! --web"
+    )
+)
 
 if "!IS_LAN!"=="1" (
     set "OPENSHORTS_LAN=1"
-    set "HOST_BIND=0.0.0.0"
 ) else (
     set "OPENSHORTS_LAN=0"
-    set "HOST_BIND=127.0.0.1"
 )
 
 :: 5. Display Access URLs
@@ -139,23 +147,24 @@ if "!IS_LAN!"=="1" (
     echo                 [LAN mode enabled: Access from any phone or PC on Wi-Fi]
 ) else (
     echo.
-    echo   Tip: Run "run.bat --lan" to enable Wi-Fi / mobile LAN access across your local network
+    echo   Tip: Run "run.bat --lan" to enable Wi-Fi / mobile LAN access
+    echo   Tip: Run "run.bat --web" to open in your default web browser
 )
 echo =====================================================================
 echo.
 
-:: 6. Launch Web Browser
-echo [*] Launching OpenShorts Studio in your default browser...
-start "" "http://localhost:8000"
-
-:: 7. Start Uvicorn Server
-if "!IS_LAN!"=="1" (
-    echo [*] Starting OpenShorts server on http://0.0.0.0:8000 [LAN Enabled]...
+:: 6. Launch Native Desktop Window (or Browser Fallback with --web)
+if "!IS_WEB!"=="1" (
+    echo [*] Starting OpenShorts Studio in browser mode...
 ) else (
-    echo [*] Starting OpenShorts server on http://127.0.0.1:8000 [Localhost Only]...
+    echo [*] Launching OpenShorts Studio Pro native desktop window...
 )
-echo     [Keep this window open while using the Studio. Press Ctrl+C to stop.]
-echo.
-"!ACTIVE_PY!" -m uvicorn backend.main:app --host !HOST_BIND! --port 8000
-
-pause
+"!ACTIVE_PY!" -m backend.desktop !DESKTOP_ARGS!
+set "EXIT_CODE=!errorlevel!"
+if !EXIT_CODE! neq 0 (
+    echo.
+    echo [ERROR] OpenShorts Studio exited with code !EXIT_CODE!.
+    pause
+    exit /b !EXIT_CODE!
+)
+exit /b 0

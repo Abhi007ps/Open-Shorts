@@ -1,3 +1,16 @@
+// Native Desktop Wrapper Detection (pywebview)
+function isDesktopApp() {
+  return Boolean(window.pywebview && window.pywebview.api);
+}
+
+function revealDesktopControls() {
+  if (!isDesktopApp()) return;
+  const browseFolderBtn = document.getElementById("btn-browse-export-folder");
+  if (browseFolderBtn) browseFolderBtn.style.display = "inline-flex";
+}
+
+window.addEventListener("pywebviewready", revealDesktopControls);
+
 // State
 const state = {
   videoLoaded: false,
@@ -1561,9 +1574,28 @@ function initEventListeners() {
   const btnBrowse = document.getElementById("btn-browse-file");
 
   if (filePicker) {
-    if (btnBrowse) btnBrowse.addEventListener("click", () => filePicker.click());
+    const openVideoPicker = async (e) => {
+      if (isDesktopApp() && typeof window.pywebview.api.pick_video_file === "function") {
+        if (e) e.preventDefault();
+        try {
+          const pickedPath = await window.pywebview.api.pick_video_file();
+          if (pickedPath && String(pickedPath).trim()) {
+            const clean = String(pickedPath).trim();
+            const pathInput = document.getElementById("input-video-path");
+            if (pathInput) pathInput.value = clean;
+            await loadSource(clean);
+          }
+        } catch (err) {
+          console.warn("Desktop file picker failed, falling back to browser picker:", err);
+          filePicker.click();
+        }
+        return;
+      }
+      filePicker.click();
+    };
+    if (btnBrowse) btnBrowse.addEventListener("click", openVideoPicker);
     if (dropZone) {
-      dropZone.addEventListener("click", () => filePicker.click());
+      dropZone.addEventListener("click", openVideoPicker);
       dropZone.addEventListener("dragover", (e) => {
         e.preventDefault();
         dropZone.style.borderColor = "var(--accent-gold)";
@@ -5295,8 +5327,38 @@ function initExportOptions() {
 
   // Export Destination Folder Controls
   const inputExportFolder = document.getElementById("input-export-folder");
+  const btnBrowseExportFolder = document.getElementById("btn-browse-export-folder");
   const btnSaveExportFolder = document.getElementById("btn-save-export-folder");
   const btnResetExportFolder = document.getElementById("btn-reset-export-folder");
+
+  revealDesktopControls();
+
+  if (btnBrowseExportFolder && inputExportFolder) {
+    btnBrowseExportFolder.addEventListener("click", async () => {
+      if (!isDesktopApp() || typeof window.pywebview.api.pick_export_folder !== "function") return;
+      try {
+        const folder = await window.pywebview.api.pick_export_folder();
+        if (folder && String(folder).trim()) {
+          const cleanFolder = String(folder).trim();
+          const res = await fetch("/api/set_export_folder", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ folder_path: cleanFolder })
+          });
+          const data = await res.json();
+          if (res.ok && data.status === "success") {
+            inputExportFolder.value = data.path;
+            showToast(`Export location updated: ${data.path}`);
+            fetchOutputs();
+          } else {
+            alert(`Error setting export folder: ${data.detail || data.message || "Failed"}`);
+          }
+        }
+      } catch (e) {
+        alert("Could not pick export folder: " + e.message);
+      }
+    });
+  }
   const btnTab5OpenFolder = document.getElementById("btn-tab5-open-folder");
   const btnOpenZipFolder = document.getElementById("btn-open-zip-folder");
   const btnCreateZipNow = document.getElementById("btn-create-zip-now");

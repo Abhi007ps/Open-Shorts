@@ -90,8 +90,10 @@ For the complete feature set, ensure the following are available on your system 
 
 #### Windows:
 1. Clone or unzip the repository.
-2. Double-click **`setup.bat`** (or **`run.bat`**).
-3. OpenShorts automatically installs Python 3.12 (via `winget` if missing), creates `.venv`, installs dependencies, downloads FFmpeg, `whisper-cli`, the hardware-matched Whisper model, `Montserrat-ExtraBold.ttf`, tier-gated Real-ESRGAN (on discrete `>= 4 GB VRAM` GPUs), and Ollama + Qwen3, then opens **`http://localhost:8000`**.
+2. Double-click **`setup.bat`** (or **`run.bat`** / your Desktop shortcut).
+3. OpenShorts automatically installs Python 3.12 (via `winget` if missing), creates `.venv`, installs dependencies, downloads FFmpeg, `whisper-cli`, the hardware-matched Whisper model, `Montserrat-ExtraBold.ttf`, tier-gated Real-ESRGAN (on discrete `>= 4 GB VRAM` GPUs), and Ollama + Qwen3, then opens **OpenShorts Studio Pro** as a native desktop window (powered by `pywebview`) with instant zero-copy file and folder pickers.
+
+> **Classic Browser Mode (`--web`)**: Run `run.bat --web` (or `./run.sh --web`) to open OpenShorts in your default web browser instead of the native desktop window.
 
 #### macOS / Linux:
 1. Ensure `ffmpeg` is installed (`brew install ffmpeg` on macOS, or `sudo apt install ffmpeg` on Ubuntu/Debian).
@@ -131,6 +133,7 @@ OpenShorts-Studio/
 │   ├── llm_engine.py         # Ollama client & story-first prompt pipeline
 │   ├── reset_data.py         # Factory reset & clean slate maintenance
 │   ├── installer.py          # Zero-touch dependency & model auto-installer
+│   ├── desktop.py            # Native pywebview desktop shell & Uvicorn manager
 │   └── bootstrap.py          # Pre-flight environment diagnostics & setup
 ├── frontend/                 # Studio Pro Web Interface
 │   ├── index.html            # 2-pane NLE layout & safe-zone preview stage

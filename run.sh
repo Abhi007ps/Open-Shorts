@@ -39,7 +39,7 @@ fi
 ACTIVE_PY="$VENV_DIR/bin/python"
 
 # 3. Verify / Install Dependencies
-if ! "$ACTIVE_PY" -c "import fastapi, uvicorn, pydantic, PIL, aiofiles, yt_dlp" >/dev/null 2>&1; then
+if ! "$ACTIVE_PY" -c "import fastapi, uvicorn, pydantic, PIL, aiofiles, yt_dlp, webview" >/dev/null 2>&1; then
   echo "[*] Installing required Python packages from requirements.txt..."
   "$ACTIVE_PY" -m pip install --upgrade pip --quiet || true
   "$ACTIVE_PY" -m pip install -r "$SCRIPT_DIR/requirements.txt"
@@ -48,20 +48,22 @@ fi
 # 4. Run Zero-Touch Setup & Pre-Flight Hardware Diagnostics
 "$ACTIVE_PY" "$SCRIPT_DIR/backend/bootstrap.py" --setup || true
 
-# 5. Parse --lan flag
+# 5. Parse --lan and --web flags
 IS_LAN=0
+DESKTOP_ARGS=()
 for arg in "$@"; do
   if [ "$arg" = "--lan" ]; then
     IS_LAN=1
+    DESKTOP_ARGS+=("--lan")
+  elif [ "$arg" = "--web" ]; then
+    DESKTOP_ARGS+=("--web")
   fi
 done
 
 if [ "$IS_LAN" = "1" ]; then
   export OPENSHORTS_LAN=1
-  HOST_BIND="0.0.0.0"
 else
   export OPENSHORTS_LAN=0
-  HOST_BIND="127.0.0.1"
 fi
 
 echo
@@ -74,16 +76,10 @@ if [ "$IS_LAN" = "1" ]; then
   echo "  [LAN Mode]    Enabled on 0.0.0.0:8000"
 else
   echo "  Tip: Run \"./run.sh --lan\" for Wi-Fi / mobile LAN access"
+  echo "  Tip: Run \"./run.sh --web\" to open in your default web browser"
 fi
 echo "====================================================================="
 echo
 
-# 6. Open Browser
-if [ "$(uname -s)" = "Darwin" ]; then
-  open "http://localhost:8000" >/dev/null 2>&1 || true
-elif command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "http://localhost:8000" >/dev/null 2>&1 || true
-fi
-
-# 7. Start Uvicorn Server
-exec "$ACTIVE_PY" -m uvicorn backend.main:app --host "$HOST_BIND" --port 8000
+# 6. Launch Native Desktop Window (or Browser Fallback with --web)
+exec "$ACTIVE_PY" -m backend.desktop "${DESKTOP_ARGS[@]}"
