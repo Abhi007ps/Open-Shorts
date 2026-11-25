@@ -223,6 +223,28 @@ header {
   animation: fadeInDown 0.15s ease-out;
 }
 
+.tools-status-wrapper { position: relative; }
+.tools-pill-badge { gap: 8px; }
+.tools-pill-badge.has-in-use { border-color: rgba(245, 158, 11, 0.55); background: rgba(245, 158, 11, 0.10); }
+.tool-mini-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--text-primary); background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border-subtle); }
+.tools-count-tag { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+.status-led { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.status-led.led-green { background-color: #10B981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.85); }
+.status-led.led-red { background-color: #EF4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.85); }
+@keyframes ledPulse { 0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 8px rgba(245, 158, 11, 0.95); } 50% { opacity: 0.45; transform: scale(1.2); box-shadow: 0 0 14px rgba(245, 158, 11, 0.55); } }
+.status-led.led-in-use { background-color: #F59E0B; box-shadow: 0 0 8px rgba(245, 158, 11, 0.95); animation: ledPulse 1.1s ease-in-out infinite; }
+.tools-dropdown { width: 350px; gap: 6px; }
+.tool-status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: var(--radius-sm); background: var(--bg-card); border: 1px solid var(--border-subtle); }
+.tool-status-row.is-in-use { border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.06); }
+.tool-status-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.tool-status-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tool-status-name { font-size: 11.5px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 5px; }
+.tool-status-detail { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-state-badge { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; letter-spacing: 0.4px; flex-shrink: 0; }
+.tool-state-badge.is-active { background: rgba(16, 185, 129, 0.14); color: #10B981; border: 1px solid rgba(16, 185, 129, 0.35); }
+.tool-state-badge.is-in-use { background: rgba(245, 158, 11, 0.16); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.45); }
+.tool-state-badge.is-inactive { background: rgba(239, 68, 68, 0.14); color: #F87171; border: 1px solid rgba(239, 68, 68, 0.35); }
+
 @keyframes fadeInDown {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }

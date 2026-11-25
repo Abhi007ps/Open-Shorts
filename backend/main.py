@@ -7,6 +7,8 @@ import subprocess
 import zipfile
 import threading
 import uuid
+import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
@@ -16,9 +18,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.clipper import probe_video, auto_generate_clips, generate_preview_frame, render_clip
-from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, get_hardware_profile, get_best_encoder
+from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, REALESRGAN_BIN, get_hardware_profile, get_best_encoder
 from backend.transcriber import transcribe_video, group_words_into_segments, ensure_whisper_model, MODELS_DIR, JobCancelledError
-from backend.subtitle_generator import generate_ass_subtitles, generate_srt_subtitles
+from backend.subtitle_generator import generate_ass_subtitles, generate_srt_subtitles, FONTS_DIR
+from backend.forced_aligner import is_forced_aligner_available
 from backend.viral_detector import detect_viral_moments
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -138,6 +141,23 @@ CURRENT_STATE: Dict[str, Any] = {
 # ==============================================================================
 JOBS: Dict[str, Dict[str, Any]] = {}
 JOB_CANCEL_EVENTS: Dict[str, threading.Event] = {}
+ACTIVE_TOOL_COUNTS: Dict[str, int] = {}
+
+@contextmanager
+def _tool_in_use(*tool_ids: str):
+    with STATE_LOCK:
+        for tid in tool_ids:
+            ACTIVE_TOOL_COUNTS[tid] = ACTIVE_TOOL_COUNTS.get(tid, 0) + 1
+    try:
+        yield
+    finally:
+        with STATE_LOCK:
+            for tid in tool_ids:
+                nxt = ACTIVE_TOOL_COUNTS.get(tid, 1) - 1
+                if nxt <= 0:
+                    ACTIVE_TOOL_COUNTS.pop(tid, None)
+                else:
+                    ACTIVE_TOOL_COUNTS[tid] = nxt
 
 def start_background_job(job_type: str, worker_fn: Callable[[str, threading.Event, Callable[[int, Optional[str]], None]], Any]) -> Dict[str, Any]:
     job_id = uuid.uuid4().hex[:12]
@@ -409,6 +429,144 @@ class ExportReq(BaseModel):
 def get_system_hardware():
     """Returns detected CPU, GPU, and hardware video encoders for the current machine."""
     return get_hardware_profile()
+
+def _bin_ready(bin_path: Optional[str]) -> bool:
+    return bool(bin_path and (os.path.isfile(bin_path) or shutil.which(bin_path)))
+
+def _get_in_use_tools() -> set:
+    with STATE_LOCK:
+        in_use = {tid for tid, cnt in ACTIVE_TOOL_COUNTS.items() if cnt > 0}
+
+        def _classify_stream_step(step_l: str):
+            if any(k in step_l for k in ("qwen", "tournament", "curat", "story")):
+                in_use.add("llm")
+            elif any(k in step_l for k in ("whisper", "transcrib")):
+                in_use.add("transcription")
+            elif any(k in step_l for k in ("scanning acoustic", "energy")):
+                in_use.add("ffmpeg")
+            else:
+                in_use.add("ytdlp")
+
+        def _classify_transcribe_step(step_l: str):
+            if "extracting" in step_l:
+                in_use.add("ffmpeg")
+            else:
+                in_use.add("transcription")
+                if any(k in step_l for k in ("sanitizing", "align")) and is_forced_aligner_available():
+                    in_use.add("wav2vec2")
+
+        for job in JOBS.values():
+            if job.get("status") != "running":
+                continue
+            jtype = job.get("type", "")
+            step_l = str(job.get("step", "")).lower()
+            if jtype == "scan_stream_audio":
+                _classify_stream_step(step_l)
+            elif jtype == "load_stream_range":
+                in_use.add("ytdlp")
+                if "remux" in step_l or "merge" in step_l:
+                    in_use.add("ffmpeg")
+            elif jtype in ("transcribe", "transcribe_all_clips"):
+                _classify_transcribe_step(step_l)
+            elif jtype in ("export_clip", "export_all"):
+                in_use.add("ffmpeg")
+                if REALESRGAN_BIN and os.path.isfile(REALESRGAN_BIN):
+                    in_use.add("realesrgan")
+
+        sp = CURRENT_STATE.get("stream_progress") or {}
+        if sp.get("status") in ("processing", "downloading"):
+            _classify_stream_step(str(sp.get("step", "")).lower())
+
+        tp = CURRENT_STATE.get("transcribe_progress") or {}
+        if tp.get("status") == "running":
+            _classify_transcribe_step(str(tp.get("step", "")).lower())
+
+        ep = CURRENT_STATE.get("export_progress") or {}
+        if ep.get("status") == "rendering":
+            in_use.add("ffmpeg")
+            if REALESRGAN_BIN and os.path.isfile(REALESRGAN_BIN):
+                in_use.add("realesrgan")
+
+    return in_use
+
+@app.get("/api/tools_status")
+def get_tools_status():
+    """Returns fast 3-state (active / in_use / inactive) status for all Studio tools."""
+    in_use_set = _get_in_use_tools()
+
+    # 1. LLM Story Brain (Ollama)
+    from backend.llm_engine import is_ollama_online, get_preferred_llama_model
+    online = is_ollama_online(timeout=1.2)
+    preferred_model = get_preferred_llama_model() if online else None
+    llm_active = bool(online and preferred_model)
+    llm_detail = f"Ollama • {preferred_model}" if llm_active else ("Ollama online (no model)" if online else "Ollama offline (NLP fallback)")
+
+    # 2. Transcription (Whisper)
+    cli_ok = _bin_ready(WHISPER_CLI)
+    found_models = []
+    for fname, label in (("ggml-large-v3-turbo-q5_0.bin", "large-v3-turbo"), ("ggml-small.en.bin", "small.en")):
+        fpath = os.path.join(MODELS_DIR, fname)
+        if os.path.isfile(fpath) and os.path.getsize(fpath) > 1_000_000:
+            found_models.append(label)
+    asr_active = bool(cli_ok and found_models)
+    asr_detail = ", ".join(found_models) if asr_active else ("CLI ready (model auto-downloads)" if cli_ok else "whisper-cli missing")
+
+    # 3. Video Engine (FFmpeg)
+    ff_active = _bin_ready(FFMPEG_BIN) and _bin_ready(FFPROBE_BIN)
+    ff_detail = "FFmpeg + FFprobe ready" if ff_active else "Missing binary"
+
+    # 4. Stream Loader (yt-dlp)
+    yt_active = importlib.util.find_spec("yt_dlp") is not None
+    yt_detail = "4K/VOD range slicing ready" if yt_active else "yt-dlp not installed"
+
+    # 5. Phoneme Sync (Wav2Vec2)
+    w2v_active = is_forced_aligner_available()
+    w2v_detail = "Active (~15ms phoneme lock)" if w2v_active else "Inactive (using Whisper DTW)"
+
+    # 6. Facecam AI (Real-ESRGAN)
+    esr_active = bool(REALESRGAN_BIN and os.path.isfile(REALESRGAN_BIN))
+    esr_detail = "Vulkan neural upscale active" if esr_active else "Inactive (FFmpeg Pro Clarity)"
+
+    # 7. Studio Flow Font
+    font_active = os.path.isfile(os.path.join(FONTS_DIR, "Montserrat-ExtraBold.ttf"))
+    font_detail = "Montserrat ExtraBold ready" if font_active else "Fallback font active"
+
+    raw_tools = [
+        ("llm", "LLM Story Brain", llm_active, False, llm_detail),
+        ("transcription", "Transcription (Whisper)", asr_active, False, asr_detail),
+        ("ffmpeg", "Video Engine (FFmpeg)", ff_active, False, ff_detail),
+        ("ytdlp", "Stream Loader (yt-dlp)", yt_active, False, yt_detail),
+        ("wav2vec2", "Phoneme Sync (Wav2Vec2)", w2v_active, True, w2v_detail),
+        ("realesrgan", "Facecam AI (Real-ESRGAN)", esr_active, True, esr_detail),
+        ("font", "Studio Flow Font", font_active, True, font_detail),
+    ]
+
+    tools = []
+    for tid, name, active, optional, detail in raw_tools:
+        is_in_use = tid in in_use_set
+        state_val = "in_use" if is_in_use else ("active" if active else "inactive")
+        tools.append({
+            "id": tid,
+            "name": name,
+            "active": active,
+            "in_use": is_in_use,
+            "state": state_val,
+            "optional": optional,
+            "detail": detail,
+        })
+
+    active_count = sum(1 for t in tools if t["active"])
+    core_all_active = all(t["active"] for t in tools if not t["optional"])
+
+    return {
+        "status": "ok",
+        "active_count": active_count,
+        "total_count": len(tools),
+        "core_all_active": core_all_active,
+        "any_in_use": bool(in_use_set),
+        "in_use_tools": sorted(in_use_set),
+        "tools": tools,
+    }
 
 class SetExportFolderReq(BaseModel):
     folder_path: str
@@ -687,15 +845,16 @@ def upload_video(file: UploadFile = File(...)):
 
 @app.post("/api/probe_stream")
 def api_probe_stream(req: ProbeStreamReq):
-    try:
-        from backend.stream_loader import probe_stream, hunt_stream_viral_moments
-        meta = probe_stream(req.url)
-        moments = hunt_stream_viral_moments(req.url, meta.get("duration", 0), meta)
-        return {"status": "success", "meta": meta, "viral_candidates": moments}
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
+    with _tool_in_use("ytdlp"):
+        try:
+            from backend.stream_loader import probe_stream, hunt_stream_viral_moments
+            meta = probe_stream(req.url)
+            moments = hunt_stream_viral_moments(req.url, meta.get("duration", 0), meta)
+            return {"status": "success", "meta": meta, "viral_candidates": moments}
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=400, detail=str(e))
 
 def _do_load_stream_range(req: LoadStreamRangeReq, cancel_event: Optional[threading.Event] = None, progress_cb: Optional[Callable] = None):
     from backend.stream_loader import download_stream_slice
@@ -1156,30 +1315,31 @@ def detect_clips_endpoint(req: DetectViralReq):
         
     target_n = req.target_clips if req.mode == "manual" else None
     webcam_crop = req.webcam_crop or (CURRENT_STATE.get("template", {}).get("webcam_crop") if isinstance(CURRENT_STATE.get("template"), dict) else None)
-    try:
-        clips = detect_viral_moments(
-            video_path=video_path,
-            video_duration=duration,
-            subtitles=CURRENT_STATE["subtitles"],
-            min_duration=req.min_duration,
-            max_duration=req.max_duration,
-            target_clips=target_n,
-            profile=req.profile or "balanced",
-            weight_audio=req.weight_audio,
-            weight_pitch=req.weight_pitch,
-            weight_hook=req.weight_hook,
-            weight_speech=req.weight_speech,
-            weight_motion=req.weight_motion,
-            snap_boundaries=req.snap_boundaries if req.snap_boundaries is not None else True,
-            webcam_crop=webcam_crop,
-            use_llm=req.use_llm if req.use_llm is not None else True,
-            llm_model=req.llm_model
-        )
+    with _tool_in_use("ffmpeg", *(["llm"] if req.use_llm is not False else [])):
+        try:
+            clips = detect_viral_moments(
+                video_path=video_path,
+                video_duration=duration,
+                subtitles=CURRENT_STATE["subtitles"],
+                min_duration=req.min_duration,
+                max_duration=req.max_duration,
+                target_clips=target_n,
+                profile=req.profile or "balanced",
+                weight_audio=req.weight_audio,
+                weight_pitch=req.weight_pitch,
+                weight_hook=req.weight_hook,
+                weight_speech=req.weight_speech,
+                weight_motion=req.weight_motion,
+                snap_boundaries=req.snap_boundaries if req.snap_boundaries is not None else True,
+                webcam_crop=webcam_crop,
+                use_llm=req.use_llm if req.use_llm is not None else True,
+                llm_model=req.llm_model
+            )
 
-        CURRENT_STATE["clips"] = clips
-        return {"status": "success", "count": len(clips), "clips": clips}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Viral detection failed: {e}")
+            CURRENT_STATE["clips"] = clips
+            return {"status": "success", "count": len(clips), "clips": clips}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Viral detection failed: {e}")
 
 @app.get("/api/llm/status")
 def get_llm_status():
@@ -1662,22 +1822,23 @@ def create_preview(req: PreviewReq):
     preview_filename = f"preview_{uuid.uuid4().hex[:8]}.png"
     preview_output = os.path.join(TEMP_DIR, preview_filename)
     
-    try:
-        subs_to_use = req.subtitles if req.subtitles is not None else CURRENT_STATE.get("subtitles")
-        video_meta = CURRENT_STATE.get("video_meta")
-        generate_preview_frame(
-            video_path=video_path,
-            timestamp=req.timestamp,
-            template_config=req.template_config,
-            subtitle_config=req.subtitle_config,
-            output_png=preview_output,
-            hook_config=req.hook_config,
-            all_subtitles=subs_to_use,
-            video_meta=video_meta
-        )
-        prune_temp_previews(keep=5)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Preview generation failed: {e}")
+    with _tool_in_use("ffmpeg"):
+        try:
+            subs_to_use = req.subtitles if req.subtitles is not None else CURRENT_STATE.get("subtitles")
+            video_meta = CURRENT_STATE.get("video_meta")
+            generate_preview_frame(
+                video_path=video_path,
+                timestamp=req.timestamp,
+                template_config=req.template_config,
+                subtitle_config=req.subtitle_config,
+                output_png=preview_output,
+                hook_config=req.hook_config,
+                all_subtitles=subs_to_use,
+                video_meta=video_meta
+            )
+            prune_temp_previews(keep=5)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Preview generation failed: {e}")
         
     return {"status": "success", "preview_url": f"/storage/temp/{preview_filename}?t={os.path.getmtime(preview_output)}"}
 

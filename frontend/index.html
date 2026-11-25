@@ -46,6 +46,30 @@
           </div>
         </div>
       </div>
+
+      <!-- Live 3-State Tools Status Pill & Dropdown -->
+      <div class="tools-status-wrapper">
+        <div id="tools-status-badge" class="hw-pill-badge tools-pill-badge" title="AI & Engine Tools Status • Click to inspect" style="cursor: pointer; user-select: none;">
+          <span id="tools-summary-dot" class="status-led led-green"></span>
+          <span>Tools</span>
+          <span class="tool-mini-chip"><span id="mini-led-llm" class="status-led led-red"></span>LLM</span>
+          <span class="tool-mini-chip"><span id="mini-led-asr" class="status-led led-red"></span>Whisper</span>
+          <span id="tools-active-count" class="tools-count-tag">--</span>
+          <i class="fa-solid fa-chevron-down" style="font-size: 9px; opacity: 0.7;"></i>
+        </div>
+
+        <div id="tools-status-dropdown" class="hw-dropdown tools-dropdown" style="display: none;">
+          <div class="hw-dropdown-header">
+            <div style="font-size: 11px; font-weight: 700; color: #FFFFFF; display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-screwdriver-wrench" style="color: var(--accent);"></i> AI &amp; ENGINE TOOLS
+            </div>
+            <button id="btn-refresh-tools" type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 10px; line-height: 1.4;">
+              <i class="fa-solid fa-rotate"></i> Refresh
+            </button>
+          </div>
+          <div id="tools-status-list" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;"></div>
+        </div>
+      </div>
     </div>
 
     <div class="header-actions">

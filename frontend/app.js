@@ -371,6 +371,7 @@ async function runAsyncJob(endpoint, fetchOptions = {}, progressUiConfig = {}) {
   let pollTimer = null;
 
   try {
+    if (typeof fetchToolsStatus === "function") fetchToolsStatus();
     const res = await fetch(asyncEndpoint, fetchOptions);
     if (!res.ok) {
       const errTxt = await res.text();
@@ -438,6 +439,8 @@ async function runAsyncJob(endpoint, fetchOptions = {}, progressUiConfig = {}) {
       pBar.error(err.message || "Failed");
     }
     throw err;
+  } finally {
+    if (typeof fetchToolsStatus === "function") fetchToolsStatus();
   }
 }
 
@@ -470,6 +473,7 @@ document.addEventListener("DOMContentLoaded", () => {
   safeInit(initEnhancePresets, "initEnhancePresets");
   safeInit(initExportOptions, "initExportOptions");
   safeInit(initHardwareDetection, "initHardwareDetection");
+  safeInit(initToolsStatus, "initToolsStatus");
   safeInit(initPlayablePreview, "initPlayablePreview");
   safeInit(initViralProfileControls, "initViralProfileControls");
   safeInit(initLLMStatus, "initLLMStatus");
@@ -2087,6 +2091,7 @@ async function runViralDetection() {
   }
 
   try {
+    if (typeof fetchToolsStatus === "function") fetchToolsStatus();
     const res = await fetch("/api/detect_clips", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2126,6 +2131,7 @@ async function runViralDetection() {
     alert("Viral detection failed: " + err.message);
     renderClips();
   } finally {
+    if (typeof fetchToolsStatus === "function") fetchToolsStatus();
     if (btn) {
       btn.innerHTML = origHtml;
       btn.disabled = false;
@@ -4889,6 +4895,137 @@ function initEnhancePresets() {
   });
 }
 
+// ==================== LIVE 3-STATE TOOLS STATUS ====================
+let toolsStatusPollTimer = null;
+
+function _toolLedClass(stateVal) {
+  if (stateVal === "in_use") return "status-led led-in-use";
+  if (stateVal === "active") return "status-led led-green";
+  return "status-led led-red";
+}
+
+function scheduleToolsStatusPoll(delayMs) {
+  if (toolsStatusPollTimer) {
+    clearTimeout(toolsStatusPollTimer);
+    toolsStatusPollTimer = null;
+  }
+  if (!document.hidden) {
+    toolsStatusPollTimer = setTimeout(fetchToolsStatus, delayMs);
+  }
+}
+
+async function fetchToolsStatus() {
+  let nextDelay = 20000;
+  try {
+    const res = await fetch("/api/tools_status");
+    if (!res.ok) throw new Error("Failed to fetch tools status");
+    const data = await res.json();
+
+    const badge = document.getElementById("tools-status-badge");
+    const summaryDot = document.getElementById("tools-summary-dot");
+    const miniLlm = document.getElementById("mini-led-llm");
+    const miniAsr = document.getElementById("mini-led-asr");
+    const countEl = document.getElementById("tools-active-count");
+    const listEl = document.getElementById("tools-status-list");
+
+    const tools = Array.isArray(data.tools) ? data.tools : [];
+    const byId = {};
+    tools.forEach(t => { byId[t.id] = t; });
+
+    if (summaryDot) {
+      const sumState = data.any_in_use ? "in_use" : (data.core_all_active ? "active" : "inactive");
+      summaryDot.className = _toolLedClass(sumState);
+    }
+    if (badge) {
+      badge.classList.toggle("has-in-use", !!data.any_in_use);
+    }
+    if (miniLlm && byId.llm) {
+      miniLlm.className = _toolLedClass(byId.llm.state);
+    }
+    if (miniAsr && byId.transcription) {
+      miniAsr.className = _toolLedClass(byId.transcription.state);
+    }
+    if (countEl && data.active_count !== undefined && data.total_count !== undefined) {
+      countEl.innerText = `${data.active_count}/${data.total_count}`;
+    }
+
+    if (listEl) {
+      listEl.innerHTML = tools.map(t => {
+        const ledCls = _toolLedClass(t.state);
+        const rowCls = t.state === "in_use" ? "tool-status-row is-in-use" : "tool-status-row";
+        const badgeCls = t.state === "in_use" ? "tool-state-badge is-in-use" : (t.state === "active" ? "tool-state-badge is-active" : "tool-state-badge is-inactive");
+        const badgeTxt = t.state === "in_use" ? "IN USE" : (t.state === "active" ? "ACTIVE" : "INACTIVE");
+        const optTag = t.optional ? `<span style="font-size:10px;color:var(--text-muted);font-weight:400;">(Optional)</span>` : "";
+        return `
+          <div class="${rowCls}" data-tool-id="${t.id}">
+            <div class="tool-status-left">
+              <span class="${ledCls}"></span>
+              <div class="tool-status-text">
+                <div class="tool-status-name">${t.name} ${optTag}</div>
+                <div class="tool-status-detail" title="${t.detail || ''}">${t.detail || ''}</div>
+              </div>
+            </div>
+            <span class="${badgeCls}">${badgeTxt}</span>
+          </div>
+        `;
+      }).join("");
+    }
+
+    nextDelay = data.any_in_use ? 2000 : 20000;
+  } catch (err) {
+    console.warn("[ToolsStatus] Poll notice:", err);
+    nextDelay = 20000;
+  } finally {
+    scheduleToolsStatusPoll(nextDelay);
+  }
+}
+
+function initToolsStatus() {
+  const badge = document.getElementById("tools-status-badge");
+  const dropdown = document.getElementById("tools-status-dropdown");
+  const refreshBtn = document.getElementById("btn-refresh-tools");
+
+  if (badge && dropdown) {
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isVisible = dropdown.style.display === "flex" || dropdown.style.display === "block";
+      const hwDropdown = document.getElementById("hw-selector-dropdown");
+      const hwBadge = document.getElementById("hw-status-badge");
+      if (hwDropdown) hwDropdown.style.display = "none";
+      if (hwBadge) hwBadge.classList.remove("active-open");
+      dropdown.style.display = isVisible ? "none" : "flex";
+      badge.classList.toggle("active-open", !isVisible);
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!dropdown.contains(e.target) && !badge.contains(e.target)) {
+        dropdown.style.display = "none";
+        badge.classList.remove("active-open");
+      }
+    });
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      fetchToolsStatus();
+    });
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (toolsStatusPollTimer) {
+        clearTimeout(toolsStatusPollTimer);
+        toolsStatusPollTimer = null;
+      }
+    } else {
+      fetchToolsStatus();
+    }
+  });
+
+  fetchToolsStatus();
+}
+
 async function initHardwareDetection() {
   const hwBadge = document.getElementById("hw-status-badge");
   const hwText = document.getElementById("hw-status-text");
@@ -4903,6 +5040,10 @@ async function initHardwareDetection() {
     hwBadge.addEventListener("click", (e) => {
       e.stopPropagation();
       const isVisible = hwDropdown.style.display === "flex" || hwDropdown.style.display === "block";
+      const toolsDropdown = document.getElementById("tools-status-dropdown");
+      const toolsBadge = document.getElementById("tools-status-badge");
+      if (toolsDropdown) toolsDropdown.style.display = "none";
+      if (toolsBadge) toolsBadge.classList.remove("active-open");
       hwDropdown.style.display = isVisible ? "none" : "flex";
       hwBadge.classList.toggle("active-open", !isVisible);
     });
