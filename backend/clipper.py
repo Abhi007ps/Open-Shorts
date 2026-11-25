@@ -9,7 +9,23 @@ from typing import Dict, Any, List, Optional, Callable
 from backend.transcriber import JobCancelledError
 from backend.template_engine import generate_template_assets, build_composite_filtergraph, generate_hook_headline_asset
 from backend.subtitle_generator import generate_ass_subtitles, hex_to_ass_color
-from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, REALESRGAN_BIN, get_best_encoder, get_encoder_args, probe_hardware_encoders, get_cpu_info
+from backend.hardware import (
+    FFMPEG_BIN,
+    FFPROBE_BIN,
+    REALESRGAN_BIN,
+    get_best_encoder,
+    get_encoder_args,
+    probe_hardware_encoders,
+    get_cpu_info,
+    get_realesrgan_bin,
+    is_realesrgan_ready,
+    get_hwaccel_decode_args,
+    get_performance_profile,
+)
+from backend.llm_engine import unload_ollama_model
+
+_REALESRGAN_SEM = threading.Semaphore(1)
+_REALESRGAN_GPU_ID: Optional[str] = None
 
 OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "outputs"))
 TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "temp"))
@@ -351,6 +367,67 @@ def generate_preview_frame(
             
     return output_png
 
+def _detect_realesrgan_gpu_id(esrgan_bin: str) -> str:
+    """
+    Probes Vulkan devices once via a tiny 16x16 dummy run and prioritizes any discrete GPU
+    over integrated graphics, returning the Vulkan device ID string or 'auto'.
+    """
+    global _REALESRGAN_GPU_ID
+    if _REALESRGAN_GPU_ID is not None:
+        return _REALESRGAN_GPU_ID
+
+    import tempfile
+    gpu_id = "auto"
+    try:
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR) as tmp_dir:
+            in_img = os.path.join(tmp_dir, "tiny.jpg")
+            out_img = os.path.join(tmp_dir, "out.jpg")
+            subprocess.run(
+                [FFMPEG_BIN, "-y", "-f", "lavfi", "-i", "color=c=black:s=16x16", "-frames:v", "1", in_img],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            if os.path.isfile(in_img):
+                res = subprocess.run(
+                    [esrgan_bin, "-i", in_img, "-o", out_img, "-s", "2", "-f", "jpg"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
+                )
+                devices: List[tuple] = []
+                for line in (res.stderr or "").splitlines():
+                    m = re.match(r"^\s*\[(\d+)\s+([^\]]+)\]", line)
+                    if m:
+                        devices.append((m.group(1), m.group(2).strip()))
+
+                if len(devices) > 1:
+                    discrete_kw = ("nvidia", "geforce", "rtx", "gtx", "quadro", "radeon rx", "radeon pro", "intel arc", "discrete")
+                    igpu_kw = ("uhd", "iris", "vega", "radeon(tm) graphics", "llvmpipe", "swiftshader")
+                    best = None
+                    for idx, name in devices:
+                        nl = name.lower()
+                        if any(k in nl for k in discrete_kw) and not any(k in nl for k in igpu_kw):
+                            best = idx
+                            break
+                    if best is None:
+                        for idx, name in devices:
+                            nl = name.lower()
+                            if not any(k in nl for k in igpu_kw):
+                                best = idx
+                                break
+                    if best is not None:
+                        gpu_id = best
+    except Exception:
+        gpu_id = "auto"
+
+    _REALESRGAN_GPU_ID = gpu_id
+    return gpu_id
+
+
 def upscale_facecam_with_realesrgan(
     video_path: str,
     start_time: float,
@@ -366,7 +443,8 @@ def upscale_facecam_with_realesrgan(
     Extracts facecam frames, enhances them with Real-ESRGAN, and reassembles into a clean temp video.
     Returns the path to the upscaled facecam video, or None to fall back to FFmpeg clarity.
     """
-    if not REALESRGAN_BIN or not os.path.isfile(REALESRGAN_BIN):
+    esrgan_bin = get_realesrgan_bin()
+    if not is_realesrgan_ready(esrgan_bin):
         return None
     if not webcam_crop:
         return None
@@ -388,70 +466,84 @@ def upscale_facecam_with_realesrgan(
     cam_esrgan_path = os.path.join(TEMP_DIR, f"cam_esrgan_{clip_id}.mp4")
 
     try:
-        # 1. Extract cropped facecam frames for the clip duration
-        extract_cmd = [
-            FFMPEG_BIN, "-y",
-            "-ss", str(start_time),
-            "-t", str(duration),
-            "-i", video_path,
-            "-vf", f"crop={w_w}:{w_h}:{w_x}:{w_y}",
-            "-q:v", "2",
-            os.path.join(in_dir, "frame_%06d.png")
-        ]
-        res_ext = subprocess.run(extract_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if res_ext.returncode != 0:
+        try:
+            unload_ollama_model()
+        except Exception:
+            pass
+
+        with _REALESRGAN_SEM:
+            # 1. Extract cropped facecam frames for the clip duration
+            extract_cmd = [
+                FFMPEG_BIN, "-y",
+                "-ss", str(start_time),
+                "-t", str(duration),
+                "-i", video_path,
+                "-vf", f"crop={w_w}:{w_h}:{w_x}:{w_y}",
+                "-q:v", "1",
+                os.path.join(in_dir, "frame_%06d.jpg")
+            ]
+            res_ext = subprocess.run(extract_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res_ext.returncode != 0:
+                return None
+
+            in_frames = [f for f in os.listdir(in_dir) if f.endswith(".jpg")]
+            if not in_frames:
+                return None
+
+            # 2. Run Real-ESRGAN ncnn Vulkan on extracted frames
+            model_name = "realesr-animevideov3"
+            scale = "2"
+            bin_dir = os.path.dirname(esrgan_bin)
+            models_dir = os.path.join(bin_dir, "models")
+            if os.path.isdir(models_dir):
+                if not any("animevideov3" in f.lower() for f in os.listdir(models_dir)):
+                    if any("x4plus" in f.lower() for f in os.listdir(models_dir)):
+                        model_name = "realesrgan-x4plus"
+                        scale = "4"
+
+            esrgan_tile = int(get_performance_profile().get("esrgan_tile", 0))
+            gpu_id = _detect_realesrgan_gpu_id(esrgan_bin)
+
+            esrgan_cmd = [
+                esrgan_bin,
+                "-i", in_dir,
+                "-o", out_dir,
+                "-n", model_name,
+                "-s", scale,
+                "-f", "jpg",
+                "-j", "2:2:2",
+                "-t", str(esrgan_tile),
+            ]
+            if gpu_id != "auto":
+                esrgan_cmd.extend(["-g", gpu_id])
+            if os.path.isdir(models_dir):
+                esrgan_cmd.extend(["-m", models_dir])
+
+            esrgan_timeout = max(180, int(duration * 6))
+            res_esr = subprocess.run(esrgan_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=esrgan_timeout)
+            if res_esr.returncode != 0:
+                print(f"[WARN] Real-ESRGAN exited with {res_esr.returncode}. Falling back to FFmpeg Pro Clarity.")
+                return None
+
+            out_frames = [f for f in os.listdir(out_dir) if f.endswith(".jpg")]
+            if not out_frames:
+                return None
+
+            # 3. Reassemble upscaled frames into a lossless/high-fidelity temp video
+            reassemble_cmd = [
+                FFMPEG_BIN, "-y",
+                "-framerate", str(input_fps),
+                "-i", os.path.join(out_dir, "frame_%06d.jpg"),
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "10",
+                "-pix_fmt", "yuv420p",
+                cam_esrgan_path
+            ]
+            res_asm = subprocess.run(reassemble_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res_asm.returncode == 0 and os.path.isfile(cam_esrgan_path):
+                return cam_esrgan_path
             return None
-
-        in_frames = [f for f in os.listdir(in_dir) if f.endswith(".png")]
-        if not in_frames:
-            return None
-
-        # 2. Run Real-ESRGAN ncnn Vulkan on extracted frames
-        model_name = "realesr-animevideov3"
-        scale = "2"
-        bin_dir = os.path.dirname(REALESRGAN_BIN)
-        models_dir = os.path.join(bin_dir, "models")
-        if os.path.isdir(models_dir):
-            if not any("animevideov3" in f.lower() for f in os.listdir(models_dir)):
-                if any("x4plus" in f.lower() for f in os.listdir(models_dir)):
-                    model_name = "realesrgan-x4plus"
-                    scale = "4"
-
-        esrgan_cmd = [
-            REALESRGAN_BIN,
-            "-i", in_dir,
-            "-o", out_dir,
-            "-n", model_name,
-            "-s", scale,
-            "-f", "png"
-        ]
-        if os.path.isdir(models_dir):
-            esrgan_cmd.extend(["-m", models_dir])
-
-        res_esr = subprocess.run(esrgan_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        if res_esr.returncode != 0:
-            print(f"[WARN] Real-ESRGAN exited with {res_esr.returncode}. Falling back to FFmpeg Pro Clarity.")
-            return None
-
-        out_frames = [f for f in os.listdir(out_dir) if f.endswith(".png")]
-        if not out_frames:
-            return None
-
-        # 3. Reassemble upscaled frames into a lossless/high-fidelity temp video
-        reassemble_cmd = [
-            FFMPEG_BIN, "-y",
-            "-framerate", str(input_fps),
-            "-i", os.path.join(out_dir, "frame_%06d.png"),
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "10",
-            "-pix_fmt", "yuv420p",
-            cam_esrgan_path
-        ]
-        res_asm = subprocess.run(reassemble_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if res_asm.returncode == 0 and os.path.isfile(cam_esrgan_path):
-            return cam_esrgan_path
-        return None
     except Exception as e:
         print(f"[WARN] Facecam Real-ESRGAN upscaling error: {e}")
         return None
@@ -792,10 +884,15 @@ def render_clip(
             censor_profanity=subtitle_config.get("censor_profanity", True)
         )
 
+    try:
+        unload_ollama_model()
+    except Exception:
+        pass
+
     # Optional plug-and-play Real-ESRGAN neural facecam upscale pass
     cam_esrgan_path = None
     external_cam_idx = None
-    if template_config.get("facecam_ai_upscale", True) and os.path.isfile(REALESRGAN_BIN):
+    if template_config.get("facecam_ai_upscale", True) and is_realesrgan_ready():
         cam_esrgan_path = upscale_facecam_with_realesrgan(
             video_path=video_path,
             start_time=start_time,
@@ -808,7 +905,6 @@ def render_clip(
     if cam_esrgan_path and os.path.isfile(cam_esrgan_path):
         external_cam_idx = 6 if hook_png else 5
 
-    from backend.hardware import get_performance_profile
     perf_prof = get_performance_profile()
     active_encoder = encoder if (encoder and encoder != "auto") else get_best_encoder()
 
@@ -888,7 +984,12 @@ def render_clip(
     if active_encoder == "h264_vaapi":
         base_cmd.extend(["-vaapi_device", "/dev/dri/renderD128"])
 
-    base_cmd.extend([
+    hwdec_args = get_hwaccel_decode_args(active_encoder)
+    base_cmd_no_hwdec = list(base_cmd)
+    if hwdec_args:
+        base_cmd.extend(hwdec_args)
+
+    input_tail = [
         "-ss", str(start_time),
         "-t", str(duration),
         "-i", video_path,
@@ -896,7 +997,9 @@ def render_clip(
         "-i", assets["gameplay_border"],
         "-i", assets["webcam_mask"],
         "-i", assets["webcam_border"]
-    ])
+    ]
+    base_cmd.extend(input_tail)
+    base_cmd_no_hwdec.extend(input_tail)
     if hook_png:
         base_cmd.extend(["-i", hook_png])
     if cam_esrgan_path:
@@ -1037,10 +1140,31 @@ def render_clip(
                 except Exception:
                     pass
             raise JobCancelledError("Export cancelled by user")
+
+        # Retry ONCE with the same hardware encoder without hwaccel decode if hwdec_args were used
+        if hwdec_args and active_encoder != "libx264":
+            print(f"Hardware decode failed for '{active_encoder}'; retrying same encoder without hwaccel decode...")
+            no_hwdec_tail = full_cmd[len(base_cmd):]
+            retry_cmd = list(base_cmd_no_hwdec) + no_hwdec_tail
+            try:
+                if cancel_event and cancel_event.is_set():
+                    raise JobCancelledError("Export cancelled by user")
+                run_ffmpeg_with_progress(retry_cmd)
+                render_success = True
+            except JobCancelledError:
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                raise
+            except subprocess.CalledProcessError as e2:
+                e = e2
+
         # Hardware acceleration fallback safety: if GPU encoder fails, immediately retry with ultrafast CPU
-        if active_encoder != "libx264":
+        if not render_success and active_encoder != "libx264":
             print(f"Hardware encoder '{active_encoder}' failed ({e.stderr.decode('utf-8', errors='ignore')[:120] if hasattr(e, 'stderr') and e.stderr else ''}). Falling back to multi-core CPU libx264...")
-            fb_base = list(base_cmd)
+            fb_base = list(base_cmd_no_hwdec)
             fb_fg = filtergraph
             if active_encoder == "h264_vaapi":
                 # Omit -vaapi_device and strip VA-API hwupload stage for CPU encoding
@@ -1066,7 +1190,7 @@ def render_clip(
                 raise JobCancelledError("Export cancelled by user")
             run_ffmpeg_with_progress(fallback_cmd)
             render_success = True
-        else:
+        elif not render_success:
             raise e
     finally:
         for tmp_f in (clip_ass_path, hook_png, cam_esrgan_path, jc_out):

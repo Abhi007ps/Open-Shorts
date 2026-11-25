@@ -25,7 +25,7 @@ def check_directories():
 
 def verify_binaries():
     """Check availability of FFmpeg, FFprobe, and Whisper-CLI."""
-    from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, REALESRGAN_BIN
+    from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, ensure_realesrgan_for_tier
     
     # 1. FFmpeg
     try:
@@ -48,11 +48,14 @@ def verify_binaries():
     except Exception as e:
         print(f"  [WARN] Whisper CLI check: {e}")
 
-    # 3. Real-ESRGAN (Facecam Super-Resolution)
-    if os.path.isfile(REALESRGAN_BIN):
-        print(f"  [OK] Facecam Upscaler: {os.path.basename(REALESRGAN_BIN)} (Neural Facecam Super-Resolution active)")
+    # 3. Real-ESRGAN (Tier-Gated Facecam Super-Resolution)
+    res = ensure_realesrgan_for_tier()
+    if res.get("status") == "ready":
+        print(f"  [OK] Facecam Upscaler: {os.path.basename(res.get('path', 'realesrgan-ncnn-vulkan'))} (Neural Facecam Super-Resolution active, tier={res.get('tier')})")
+    elif res.get("status") == "skipped":
+        print(f"  [INFO] Facecam Upscaler: FFmpeg Pro Clarity mode (tier={res.get('tier')}, Real-ESRGAN skipped)")
     else:
-        print("  [INFO] Facecam Upscaler: FFmpeg Pro Clarity mode (realesrgan-ncnn-vulkan optional)")
+        print(f"  [WARN] Facecam Upscaler: Auto-setup deferred ({res.get('error', 'offline')}); using FFmpeg Pro Clarity mode")
 
     # 4. Phoneme Forced Alignment
     from backend.forced_aligner import is_forced_aligner_available

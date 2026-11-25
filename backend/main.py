@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.clipper import probe_video, auto_generate_clips, generate_preview_frame, render_clip
-from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, REALESRGAN_BIN, get_hardware_profile, get_best_encoder
+from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, WHISPER_CLI, REALESRGAN_BIN, get_hardware_profile, get_best_encoder, is_realesrgan_ready
 from backend.transcriber import transcribe_video, group_words_into_segments, ensure_whisper_model, MODELS_DIR, JobCancelledError
 from backend.subtitle_generator import generate_ass_subtitles, generate_srt_subtitles, FONTS_DIR
 from backend.forced_aligner import is_forced_aligner_available
@@ -482,7 +482,7 @@ def _get_in_use_tools() -> set:
                 _classify_transcribe_step(step_l)
             elif jtype in ("export_clip", "export_all"):
                 in_use.add("ffmpeg")
-                if REALESRGAN_BIN and os.path.isfile(REALESRGAN_BIN):
+                if is_realesrgan_ready():
                     in_use.add("realesrgan")
 
         sp = CURRENT_STATE.get("stream_progress") or {}
@@ -496,7 +496,7 @@ def _get_in_use_tools() -> set:
         ep = CURRENT_STATE.get("export_progress") or {}
         if ep.get("status") == "rendering":
             in_use.add("ffmpeg")
-            if REALESRGAN_BIN and os.path.isfile(REALESRGAN_BIN):
+            if is_realesrgan_ready():
                 in_use.add("realesrgan")
 
     return in_use
@@ -536,7 +536,7 @@ def get_tools_status():
     w2v_detail = "Active (~15ms phoneme lock)" if w2v_active else "Inactive (using Whisper DTW)"
 
     # 6. Facecam AI (Real-ESRGAN)
-    esr_active = bool(REALESRGAN_BIN and os.path.isfile(REALESRGAN_BIN))
+    esr_active = is_realesrgan_ready()
     esr_detail = "Vulkan neural upscale active" if esr_active else "Inactive (FFmpeg Pro Clarity)"
 
     # 7. Studio Flow Font

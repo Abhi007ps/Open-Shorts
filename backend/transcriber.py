@@ -660,6 +660,12 @@ def transcribe_video(
             if cancel_event and cancel_event.is_set():
                 raise JobCancelledError("Transcription cancelled by user")
 
+            try:
+                from backend.llm_engine import unload_ollama_model
+                unload_ollama_model()
+            except Exception:
+                pass
+
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,

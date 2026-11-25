@@ -12,10 +12,21 @@ import platform
 import subprocess
 import shutil
 import struct
+import zipfile
+import urllib.request
+import stat
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BIN_DIR = os.path.join(BASE_DIR, "bin")
+REALESRGAN_DIR = os.path.join(BIN_DIR, "realesrgan")
+
+REALESRGAN_RELEASE_URLS = {
+    "Windows": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip",
+    "Linux": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip",
+    "Darwin": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-macos.zip",
+}
 
 def find_binary(bin_name: str, subdirs: Optional[List[str]] = None) -> str:
     """
@@ -74,6 +85,120 @@ FFPROBE_BIN = find_binary("ffprobe")
 WHISPER_CLI = find_binary("whisper-cli", subdirs=["Release"])
 REALESRGAN_BIN = find_binary("realesrgan-ncnn-vulkan", subdirs=["realesrgan", "Release"])
 
+
+def get_realesrgan_bin() -> str:
+    """Dynamically resolves the Real-ESRGAN NCNN Vulkan binary and updates global REALESRGAN_BIN."""
+    global REALESRGAN_BIN
+    REALESRGAN_BIN = find_binary("realesrgan-ncnn-vulkan", subdirs=["realesrgan", "Release"])
+    return REALESRGAN_BIN
+
+
+def is_realesrgan_ready(bin_path: Optional[str] = None) -> bool:
+    """Returns True only when the executable exists AND sibling models/ contains .bin and .param files."""
+    exe = bin_path or get_realesrgan_bin()
+    if not exe or not os.path.isfile(exe):
+        return False
+    models_dir = os.path.join(os.path.dirname(os.path.abspath(exe)), "models")
+    if not os.path.isdir(models_dir):
+        return False
+    try:
+        files = os.listdir(models_dir)
+    except OSError:
+        return False
+    has_bin = any(f.endswith(".bin") for f in files)
+    has_param = any(f.endswith(".param") for f in files)
+    return has_bin and has_param
+
+
+def ensure_realesrgan_for_tier(force: bool = False) -> Dict[str, Any]:
+    """
+    Tier-gated auto-installer for portable Real-ESRGAN NCNN Vulkan (v0.2.5.0).
+    Only downloads on capable discrete GPUs (>= 4 GB VRAM) or Apple Silicon (>= 4 GB unified)
+    in 'ultra' or 'performance' tiers, unless force=True.
+    """
+    perf = get_performance_profile()
+    gpu = get_gpu_info()
+    tier = perf.get("tier")
+
+    if is_realesrgan_ready():
+        return {"status": "ready", "path": get_realesrgan_bin(), "tier": tier}
+
+    eligible = (
+        tier in ("ultra", "performance")
+        and (gpu.get("is_dedicated", False) or gpu.get("vendor") == "Apple")
+        and float(gpu.get("vram_gb", 0.0)) >= 4.0
+    )
+    if not eligible and not force:
+        return {"status": "skipped", "reason": "tier_not_eligible", "tier": tier}
+
+    system = platform.system()
+    url = REALESRGAN_RELEASE_URLS.get(system)
+    if not url:
+        return {"status": "error", "error": f"Unsupported OS for Real-ESRGAN: {system}", "tier": tier}
+
+    os.makedirs(REALESRGAN_DIR, exist_ok=True)
+    tmp_zip = os.path.join(REALESRGAN_DIR, "_realesrgan_download.zip")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 OpenShorts/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_zip, "wb") as out_f:
+            shutil.copyfileobj(resp, out_f)
+
+        target_root = Path(REALESRGAN_DIR).resolve()
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            for member in zf.infolist():
+                dest = (target_root / member.filename).resolve()
+                if dest != target_root and target_root not in dest.parents:
+                    raise ValueError(f"Unsafe zip path detected: {member.filename}")
+                if member.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member, "r") as src, open(dest, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+        # Flatten a single nested directory if present
+        entries = [p for p in target_root.iterdir() if p.name != "_realesrgan_download.zip"]
+        if len(entries) == 1 and entries[0].is_dir() and entries[0].name != "models":
+            nested = entries[0]
+            for item in list(nested.iterdir()):
+                dest_item = target_root / item.name
+                if dest_item.exists():
+                    if dest_item.is_dir():
+                        shutil.rmtree(dest_item, ignore_errors=True)
+                    else:
+                        dest_item.unlink()
+                shutil.move(str(item), str(dest_item))
+            shutil.rmtree(nested, ignore_errors=True)
+
+        exe_path = get_realesrgan_bin()
+        if system != "Windows" and os.path.isfile(exe_path):
+            st = os.stat(exe_path)
+            os.chmod(exe_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        if is_realesrgan_ready(exe_path):
+            return {"status": "ready", "path": exe_path, "tier": tier}
+        return {"status": "error", "error": "Extracted Real-ESRGAN bundle missing binary or models", "tier": tier}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "tier": tier}
+    finally:
+        try:
+            if os.path.exists(tmp_zip):
+                os.remove(tmp_zip)
+        except OSError:
+            pass
+
+
+def get_hwaccel_decode_args(encoder: str) -> List[str]:
+    """Returns safe FFmpeg input decode args matching the active hardware encoder and OS."""
+    system = platform.system()
+    if encoder == "h264_nvenc":
+        return ["-hwaccel", "cuda"]
+    if encoder in ("h264_qsv", "h264_amf") and system == "Windows":
+        return ["-hwaccel", "d3d11va"]
+    if encoder == "h264_videotoolbox" and system == "Darwin":
+        return ["-hwaccel", "videotoolbox"]
+    return []
+
 def get_cpu_info() -> Dict[str, Any]:
     """Detects CPU model, core counts, and recommended thread allocations."""
     cores = os.cpu_count() or 4
@@ -118,7 +243,7 @@ def get_cpu_info() -> Dict[str, Any]:
         "cores": cores,
         "threads": cores,
         "arch": arch,
-        "whisper_threads": max(1, min(cores, 8)),
+        "whisper_threads": max(2, min(cores // 2 if cores >= 8 else cores, 8)),
         "ffmpeg_threads": max(1, min(cores, 16))
     }
 
@@ -455,6 +580,8 @@ def get_encoder_args(encoder: str, threads: Optional[int] = None, bitrate: Optio
             "-tune", "hq",
             "-rc", "vbr",
             "-cq", cq,
+            "-bf", "2",
+            "-rc-lookahead", "20",
             "-spatial-aq", "1",
             "-temporal-aq", "1",
             "-b:v", target_bitrate,
@@ -548,18 +675,22 @@ def get_performance_profile(force_refresh: bool = False) -> Dict[str, Any]:
     # Tier Classification
     if ((is_dedicated and vram_gb >= 8.0) or (is_apple_silicon and ram_gb >= 24.0)) and (cores >= 8) and (ram_gb >= 16.0):
         tier = "ultra"
-        export_workers = 3
+        export_workers = min(4, max(2, cores // 4))
         filter_mode = "ultra"
         default_1080p_bitrate = "15M"
         whisper_model = "large-v3-turbo-q5_0"
         llm_tier = "large"
-    elif ((is_hw_enc and (is_dedicated or vram_gb >= 4.0)) and vram_gb >= 4.0) or (cores >= 8 and ram_gb >= 16.0):
+        llm_num_ctx = 8192
+        esrgan_tile = 0
+    elif (is_dedicated and vram_gb >= 4.0) or (cores >= 8 and ram_gb >= 16.0):
         tier = "performance"
         export_workers = 2
-        filter_mode = "balanced"
+        filter_mode = "ultra" if (is_dedicated and vram_gb >= 5.5) else "balanced"
         default_1080p_bitrate = "14M"
         whisper_model = "large-v3-turbo-q5_0"
-        llm_tier = "standard"
+        llm_tier = "compact" if (is_dedicated and vram_gb < 7.5) else "standard"
+        llm_num_ctx = 4096 if (is_dedicated and vram_gb < 7.5) else 8192
+        esrgan_tile = 200 if vram_gb >= 5.5 else 100
     elif is_hw_enc or (cores >= 6 and ram_gb >= 12.0):
         tier = "balanced"
         export_workers = 1
@@ -567,6 +698,8 @@ def get_performance_profile(force_refresh: bool = False) -> Dict[str, Any]:
         default_1080p_bitrate = "12M"
         whisper_model = "small.en"
         llm_tier = "compact" if (ram_gb < 12.0 and not is_dedicated) else "standard"
+        llm_num_ctx = 4096
+        esrgan_tile = 0
     else:
         tier = "eco"
         export_workers = 1
@@ -574,6 +707,8 @@ def get_performance_profile(force_refresh: bool = False) -> Dict[str, Any]:
         default_1080p_bitrate = "10M"
         whisper_model = "small.en"
         llm_tier = "compact"
+        llm_num_ctx = 4096
+        esrgan_tile = 0
 
     profile = {
         "tier": tier,
@@ -582,6 +717,8 @@ def get_performance_profile(force_refresh: bool = False) -> Dict[str, Any]:
         "default_1080p_bitrate": default_1080p_bitrate,
         "whisper_model": whisper_model,
         "llm_tier": llm_tier,
+        "llm_num_ctx": llm_num_ctx,
+        "esrgan_tile": esrgan_tile,
         "ram_gb": ram_gb,
         "vram_gb": vram_gb,
         "cores": cores,
@@ -650,7 +787,7 @@ def get_hardware_profile() -> Dict[str, Any]:
             "ffmpeg": FFMPEG_BIN,
             "ffprobe": FFPROBE_BIN,
             "whisper": WHISPER_CLI,
-            "realesrgan": REALESRGAN_BIN
+            "realesrgan": get_realesrgan_bin()
         },
-        "has_realesrgan": bool(os.path.isfile(REALESRGAN_BIN))
+        "has_realesrgan": is_realesrgan_ready()
     }

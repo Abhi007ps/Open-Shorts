@@ -33,13 +33,14 @@
 ![Subtitles and Styling Showcase](docs/images/subtitles_words_and_preset_verified.png)
 
 ### 🚀 3. Auto-Adaptive Hardware Speed Engine
-- **Hardware Probing**: Automatically detects your CPU architecture, RAM, GPU vendor, and VRAM capacity on startup.
-- **Dynamic Tiering**: Selects an optimal performance profile:
-  - `ultra`: 16GB+ RAM & 8GB+ VRAM (NVENC/QSV, multi-worker batch exports)
-  - `performance`: 16GB RAM & 4GB+ VRAM
-  - `balanced`: 8GB–16GB RAM or iGPU (1 worker, fast filters)
-  - `eco`: <8GB RAM or low VRAM (memory-conserving sequential rendering)
-- **Universal Hardware Encoding**: Supports NVIDIA (`h264_nvenc`), Intel QuickSync (`h264_qsv`), AMD (`h264_amf`), Apple Silicon (`h264_videotoolbox`), Linux (`h264_vaapi`), with safe fallback to multi-threaded CPU `libx264`.
+- **Hardware Probing**: Automatically measures CPU cores, RAM, GPU vendor, discrete vs. integrated status, and VRAM capacity on startup across Windows, Linux, and macOS.
+- **Dynamic Tiering**: Selects an optimal performance profile (`ultra`, `performance`, `balanced`, `eco`) to tune export concurrency, filter quality, Whisper thread count, and LLM context window (`llm_num_ctx`):
+  - `ultra`: 16GB+ RAM, 8+ cores & 8GB+ dedicated VRAM (or Apple Silicon 24GB+) — multi-worker exports, `8192` LLM context, untiled Real-ESRGAN
+  - `performance`: 4GB+ dedicated VRAM or 8+ cores / 16GB RAM — 2 workers, adaptive `4096`/`8192` LLM context, tiled Real-ESRGAN (`esrgan_tile`)
+  - `balanced`: 6+ cores / 12GB RAM or iGPU — 1 worker, fast filters, `4096` LLM context
+  - `eco`: <12GB RAM / low VRAM — memory-conserving sequential rendering, `4096` LLM context
+- **Universal Hardware Encode & Decode**: Supports NVIDIA (`h264_nvenc` + `cuda` decode), Intel QuickSync (`h264_qsv` + `d3d11va`), AMD (`h264_amf` + `d3d11va`), Apple Silicon (`h264_videotoolbox`), and Linux (`h264_vaapi`), with automatic same-encoder no-hwdec retry and safe fallback to multi-threaded CPU `libx264`.
+- **VRAM Handover & Tier-Gated Real-ESRGAN**: Automatically unloads idle Ollama LLM models before Whisper transcription or video rendering, and auto-downloads `realesrgan-ncnn-vulkan` on discrete GPU systems (`>= 4 GB VRAM`, prioritizing the discrete GPU on dual-GPU machines) while staying lightweight on integrated graphics.
 - **Mask Caching**: Caches Pillow-generated corner masks and border PNGs in `assets/cache/` to eliminate duplicate image rendering during video composition.
 
 ### 🎬 4. Studio Pro NLE Workspace

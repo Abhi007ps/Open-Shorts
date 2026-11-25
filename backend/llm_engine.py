@@ -8,6 +8,31 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 from backend.transcriber import JobCancelledError
 
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+_LAST_LOADED_MODEL: Optional[str] = None
+
+
+def unload_ollama_model(model: Optional[str] = None) -> bool:
+    """Frees GPU VRAM / system RAM held by the last loaded Ollama model."""
+    global _LAST_LOADED_MODEL
+    target = model or _LAST_LOADED_MODEL
+    if not target:
+        return False
+    try:
+        if not is_ollama_online(timeout=0.5):
+            return False
+        req_data = json.dumps({"model": target, "prompt": "", "keep_alive": 0}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            data=req_data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=3.0):
+            pass
+        if target == _LAST_LOADED_MODEL:
+            _LAST_LOADED_MODEL = None
+        return True
+    except Exception:
+        return False
 
 def is_ollama_online(timeout: float = 3.0) -> bool:
     """Checks if the local Ollama daemon is active and responsive using fast in-memory version endpoint."""
@@ -102,9 +127,17 @@ def query_ollama(
     If older Ollama daemon returns HTTP 400 (unsupported think parameter), retries once without think.
     Strips accidental <think>...</think> blocks from output.
     """
+    global _LAST_LOADED_MODEL
     chosen_model = model or get_preferred_llama_model()
     if not chosen_model:
         return None
+    _LAST_LOADED_MODEL = chosen_model
+
+    try:
+        from backend.hardware import get_performance_profile
+        num_ctx = int(get_performance_profile().get("llm_num_ctx", 8192))
+    except Exception:
+        num_ctx = 8192
 
     url = f"{OLLAMA_BASE_URL}/api/chat"
     messages = []
@@ -117,12 +150,12 @@ def query_ollama(
         "messages": messages,
         "stream": False,
         "think": False,
-        "keep_alive": "30m",
+        "keep_alive": "3m",
         "options": {
             "temperature": 0.2,
             "top_p": 0.9,
             "num_predict": num_predict,
-            "num_ctx": 8192
+            "num_ctx": num_ctx
         }
     }
     if json_mode:
