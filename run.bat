@@ -10,38 +10,21 @@ echo.
 
 cd /d "%~dp0"
 
-:: 1. Locate Python 3
+:: 1. Locate Python 3.10+ (validating against Windows Store alias stubs)
 set "PY_CMD="
+call :scan_python
 
-python --version >nul 2>&1
-if !errorlevel! equ 0 (
-    set "PY_CMD=python"
-    goto :found_python
-)
-
-py --version >nul 2>&1
-if !errorlevel! equ 0 (
-    set "PY_CMD=py"
-    goto :found_python
-)
-
-for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*") do (
-    if exist "%%D\python.exe" (
-        set "PY_CMD=%%D\python.exe"
-        goto :found_python
-    )
-)
-
-for /d %%D in ("%ProgramFiles%\Python3*") do (
-    if exist "%%D\python.exe" (
-        set "PY_CMD=%%D\python.exe"
-        goto :found_python
-    )
-)
-
-:found_python
 if not defined PY_CMD (
-    echo [ERROR] Python 3 was not found on your system!
+    where winget >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo [*] Python 3.10+ not found. Installing Python 3.12 automatically via winget...
+        winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+        call :scan_python
+    )
+)
+
+if not defined PY_CMD (
+    echo [ERROR] Python 3.10 or higher was not found on your system!
     echo.
     echo Please install Python 3.10 or higher from:
     echo   https://www.python.org/downloads/
@@ -55,20 +38,49 @@ if not defined PY_CMD (
     pause
     exit /b 1
 )
+goto :after_python
 
-:: 2. Setup Virtual Environment or use existing Python
+:scan_python
+for /f "delims=" %%P in ('python -c "import sys; print(sys.executable) if sys.version_info >= (3, 10) else sys.exit(1)" 2^>nul') do (
+    if exist "%%P" (
+        set "PY_CMD=%%P"
+        exit /b 0
+    )
+)
+for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable) if sys.version_info >= (3, 10) else sys.exit(1)" 2^>nul') do (
+    if exist "%%P" (
+        set "PY_CMD=%%P"
+        exit /b 0
+    )
+)
+for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*") do (
+    if exist "%%D\python.exe" (
+        "%%D\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+        if !errorlevel! equ 0 (
+            set "PY_CMD=%%D\python.exe"
+            exit /b 0
+        )
+    )
+)
+for /d %%D in ("%ProgramFiles%\Python3*") do (
+    if exist "%%D\python.exe" (
+        "%%D\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+        if !errorlevel! equ 0 (
+            set "PY_CMD=%%D\python.exe"
+            exit /b 0
+        )
+    )
+)
+exit /b 1
+
+:after_python
+
+:: 2. Always Create / Use Isolated Virtual Environment (.venv)
 set "VENV_DIR=%~dp0.venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 
 if exist "%VENV_PY%" (
     set "ACTIVE_PY=%VENV_PY%"
-    goto :check_deps
-)
-
-echo [*] Checking Python environment...
-"!PY_CMD!" -c "import fastapi, uvicorn, pydantic, PIL, yt_dlp" >nul 2>&1
-if !errorlevel! equ 0 (
-    set "ACTIVE_PY=!PY_CMD!"
     goto :check_deps
 )
 
@@ -92,8 +104,8 @@ if !errorlevel! neq 0 (
     )
 )
 
-:: 4. Run Pre-flight System & Hardware Diagnostics
-"!ACTIVE_PY!" "%~dp0backend\bootstrap.py"
+:: 4. Run Pre-flight System, Zero-Touch Setup & Hardware Diagnostics
+"!ACTIVE_PY!" "%~dp0backend\bootstrap.py" --setup
 if !errorlevel! neq 0 (
     echo [WARN] Bootstrap diagnostic encountered an issue, but attempting launch...
 )

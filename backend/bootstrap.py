@@ -114,14 +114,34 @@ def verify_hardware():
     print(f"  [OK] Auto-Tuned Tier:  {tier_name} (Workers: {perf.get('export_workers', 1)}, Filters: {perf.get('filter_mode', 'balanced')}, Bitrate: {perf.get('default_1080p_bitrate', '12M')}, LLM: {perf.get('llm_tier', 'standard')})")
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="OpenShorts Studio Pre-Flight Check & Setup")
+    parser.add_argument("--setup", action="store_true", help="Run zero-touch first-time setup for missing tools/models")
+    parser.add_argument("--skip-ollama", action="store_true", help="Skip automatic Ollama installation/model pull")
+    args, _ = parser.parse_known_args()
+
     print("---------------------------------------------------------------------")
     print("           OPENSHORTS STUDIO - SYSTEM PRE-FLIGHT CHECK               ")
     print("---------------------------------------------------------------------")
     check_directories()
+
+    # Auto-install any missing core binary/model on first run (and when --setup is passed)
+    from backend.installer import run_full_first_time_setup
+    setup_results = run_full_first_time_setup(skip_ollama=args.skip_ollama)
+
     verify_binaries()
     verify_models()
     verify_fonts()
     verify_hardware()
+
+    ol = setup_results.get("ollama", {})
+    ol_status = ol.get("status", "skipped")
+    if ol_status == "ready":
+        models = ol.get("models") or []
+        print(f"  [OK] Ollama AI:      Online ({', '.join(models[:3]) if models else 'ready'})")
+    else:
+        print(f"  [INFO] Ollama AI:    {ol_status} (Cognitive NLP fallback active)")
+
     print("---------------------------------------------------------------------")
     print(" [READY] All systems verified. Studio engine is operational!")
     print("---------------------------------------------------------------------")

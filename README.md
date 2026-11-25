@@ -86,20 +86,31 @@ For the complete feature set, ensure the following are available on your system 
 
 ## 🚀 Quick Start Guide
 
-### Launching the Studio:
-1. Double-click `run.bat`:
-   ```cmd
-   run.bat
+### ⚡ 1-Click Setup (Zero Manual Installs)
+
+#### Windows:
+1. Clone or unzip the repository.
+2. Double-click **`setup.bat`** (or **`run.bat`**).
+3. OpenShorts automatically installs Python 3.12 (via `winget` if missing), creates `.venv`, installs dependencies, downloads FFmpeg, `whisper-cli`, the hardware-matched Whisper model, `Montserrat-ExtraBold.ttf`, tier-gated Real-ESRGAN (on discrete `>= 4 GB VRAM` GPUs), and Ollama + Qwen3, then opens **`http://localhost:8000`**.
+
+#### macOS / Linux:
+1. Ensure `ffmpeg` is installed (`brew install ffmpeg` on macOS, or `sudo apt install ffmpeg` on Ubuntu/Debian).
+2. Run:
+   ```bash
+   chmod +x run.sh
+   ./run.sh
    ```
-2. The Studio will initialize diagnostics and automatically open your default browser to:
-   ```
-   http://localhost:8000
-   ```
+
+> **Tip (`OPENSHORTS_SKIP_OLLAMA=1`)**: Set `OPENSHORTS_SKIP_OLLAMA=1` before launching if you want to skip automatic Ollama installation/model download and use the built-in Cognitive NLP engine.
 
 ### Enabling Mobile / Wi-Fi LAN Access:
 To control the Studio or preview clips from a mobile device or secondary laptop on the same Wi-Fi network:
 ```cmd
 run.bat --lan
+```
+Or on macOS/Linux:
+```bash
+./run.sh --lan
 ```
 The console will display your local IP access URL (e.g., `http://192.168.1.50:8000`).
 
@@ -119,7 +130,8 @@ OpenShorts-Studio/
 │   ├── subtitle_generator.py # Zero-blink ASS/SRT karaoke subtitle engine
 │   ├── llm_engine.py         # Ollama client & story-first prompt pipeline
 │   ├── reset_data.py         # Factory reset & clean slate maintenance
-│   └── bootstrap.py          # Pre-flight environment diagnostics
+│   ├── installer.py          # Zero-touch dependency & model auto-installer
+│   └── bootstrap.py          # Pre-flight environment diagnostics & setup
 ├── frontend/                 # Studio Pro Web Interface
 │   ├── index.html            # 2-pane NLE layout & safe-zone preview stage
 │   ├── styles.css            # Obsidian dark design system & CSS variables
@@ -133,7 +145,9 @@ OpenShorts-Studio/
 │   ├── test_viral.py         # Engine viral moment extraction test
 │   ├── verify_export_and_modal.py # Full modal, gallery & static serving verification
 │   └── verify_unified_brain.py # Multimodal + LLM pipeline verification
+├── setup.bat                 # 1-Click first-time setup & shortcut launcher (Windows)
 ├── run.bat                   # 1-Click portable launcher for Windows
+├── run.sh                    # 1-Click portable launcher for macOS/Linux
 ├── push_to_github.bat        # Portable git sync script
 ├── requirements.txt          # Python dependencies
 └── .gitignore                # Clean runtime & media exclusion rules
