@@ -15,6 +15,7 @@ if BASE_DIR not in sys.path:
 BIN_DIR = os.path.join(BASE_DIR, "bin")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
+SETUP_MARKER = os.path.join(BASE_DIR, "tools", ".setup_complete")
 
 def check_directories():
     """Ensure all required runtime storage folders exist."""
@@ -141,6 +142,28 @@ def main():
         print(f"  [OK] Ollama AI:      Online ({', '.join(models[:3]) if models else 'ready'})")
     else:
         print(f"  [INFO] Ollama AI:    {ol_status} (Cognitive NLP fallback active)")
+
+    # Write persistent setup-ready marker if core dependencies are verified
+    ff_ok = setup_results.get("ffmpeg", {}).get("status") == "ready"
+    wh_ok = setup_results.get("whisper_cli", {}).get("status") == "ready"
+    model_ok = setup_results.get("whisper_model", {}).get("status") == "ready"
+    font_ok = setup_results.get("font", {}).get("status") == "ready"
+    if ff_ok and wh_ok and model_ok and font_ok:
+        try:
+            import json
+            from datetime import datetime, timezone
+            os.makedirs(os.path.dirname(SETUP_MARKER), exist_ok=True)
+            with open(SETUP_MARKER, "w", encoding="utf-8") as mf:
+                json.dump(
+                    {
+                        "setup_complete": True,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                    mf,
+                    indent=2,
+                )
+        except Exception as e:
+            print(f"  [WARN] Could not write setup marker: {e}")
 
     print("---------------------------------------------------------------------")
     print(" [READY] All systems verified. Studio engine is operational!")

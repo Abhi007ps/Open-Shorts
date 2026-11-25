@@ -27,6 +27,7 @@ bin/*.zip
 bin/*.dll
 bin/Release/
 tools/*.exe
+tools/.setup_complete
 !bin/.gitkeep
 !tools/.gitkeep
 

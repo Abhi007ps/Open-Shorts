@@ -93,6 +93,8 @@ For the complete feature set, ensure the following are available on your system 
 2. Double-click **`setup.bat`** (or **`run.bat`** / your Desktop shortcut).
 3. OpenShorts automatically installs Python 3.12 (via `winget` if missing), creates `.venv`, installs dependencies, downloads FFmpeg, `whisper-cli`, the hardware-matched Whisper model, `Montserrat-ExtraBold.ttf`, tier-gated Real-ESRGAN (on discrete `>= 4 GB VRAM` GPUs), and Ollama + Qwen3, then opens **OpenShorts Studio Pro** as a native desktop window (powered by `pywebview`) with instant zero-copy file and folder pickers.
 
+> **Silent Desktop Shortcut**: Running `create_desktop_shortcut.bat` creates a Desktop icon (`launch_studio.vbs`) that shows setup progress on first launch and launches **OpenShorts Studio Pro** silently with no black console window on every run after that (with logs saved to `storage/temp/desktop_app.log`).
+
 > **Classic Browser Mode (`--web`)**: Run `run.bat --web` (or `./run.sh --web`) to open OpenShorts in your default web browser instead of the native desktop window.
 
 #### macOS / Linux:
