@@ -62,25 +62,19 @@
 
 ## 🛠️ Prerequisites & Setup
 
-### What Is Automatically Installed:
-When you launch `run.bat`:
-- An isolated Python virtual environment (`.venv`) is created automatically if Python is present.
-- All Python dependencies from `requirements.txt` are verified and installed (including `fastapi`, `uvicorn`, `yt-dlp`, `pillow`, `aiofiles`, `pydantic`).
-- Whisper GGML models (`ggml-large-v3-turbo-q5_0.bin` & `ggml-small.en.bin`) are downloaded on-demand when transcribing.
+### What Is Automatically Installed (Windows 1-Click):
+When you run `setup.bat` or `run.bat`, OpenShorts automatically installs and configures everything on Windows:
+- **Python 3.12** (via `winget` if missing) + isolated `.venv` and all packages from `requirements.txt` (`fastapi`, `uvicorn`, `pywebview`, `yt-dlp`, `pillow`, `aiofiles`, `pydantic`).
+- **FFmpeg & FFprobe** (`bin/ffmpeg.exe`, `bin/ffprobe.exe`).
+- **Whisper.cpp (`whisper-cli`)** (`bin/Release/whisper-cli.exe`, CUDA on NVIDIA GPUs or CPU fallback) + hardware-matched Whisper GGML model (`ggml-large-v3-turbo-q5_0.bin` or `ggml-small.en.bin`).
+- **Real-ESRGAN** (auto-downloaded into `bin/realesrgan/` on discrete `>= 4 GB VRAM` GPUs / Apple Silicon).
+- **Ollama + Qwen3** (`qwen3:4b` or `qwen3:8b`, unless `OPENSHORTS_SKIP_OLLAMA=1` is set; offline machines fall back cleanly to the built-in Cognitive NLP engine).
 
-### System Requirements & External Binaries:
-For the complete feature set, ensure the following are available on your system `PATH` or placed in `bin/`:
-1. **FFmpeg & FFprobe**:
-   - Install via winget: `winget install Gyan.FFmpeg`
-   - Or place `ffmpeg.exe` and `ffprobe.exe` directly inside the `bin/` folder.
-2. **Whisper.cpp (`whisper-cli`)**:
-   - Bundled or placed inside `bin/Release/whisper-cli.exe` or available on your system `PATH`.
-3. **Optional Local LLM (Ollama)**:
-   - For offline AI story curation and viral moment scoring, install [Ollama](https://ollama.com) and pull `qwen3:8b`:
-     ```bash
-     ollama pull qwen3:8b
-     ```
-   - *Note*: If Ollama is offline or unavailable, OpenShorts automatically falls back to physical multimodal acoustic and visual scoring without interruption.
+### Manual / macOS / Linux Reference (Optional):
+For macOS/Linux or custom manual setups, ensure the following are available on `PATH` or placed in `bin/`:
+1. **FFmpeg & FFprobe**: `brew install ffmpeg` (macOS), `sudo apt install ffmpeg` (Ubuntu/Debian), or `winget install Gyan.FFmpeg` (Windows).
+2. **Whisper.cpp (`whisper-cli`)**: Bundled in `bin/Release/` or available on `PATH` (`brew install whisper-cpp` on macOS).
+3. **Optional Local LLM (Ollama)**: Install [Ollama](https://ollama.com) and pull `qwen3:8b` (or `qwen3:4b` on compact systems).
 
 ---
 

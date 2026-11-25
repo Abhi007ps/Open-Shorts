@@ -450,7 +450,7 @@ def get_gpu_info(force_refresh: bool = False) -> Dict[str, Any]:
         nl = name.lower()
         return any(k in nl for k in (
             "nvidia", "geforce", "rtx", "gtx", "quadro", "titan", 
-            "radeon rx", "radeon pro", "discrete"
+            "radeon rx", "radeon pro", "intel arc", "arc a", "arc b", "discrete"
         ))
 
     dedicated = [g for g in gpus if is_dedicated(g)]

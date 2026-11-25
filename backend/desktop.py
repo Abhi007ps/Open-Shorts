@@ -101,6 +101,7 @@ def _install_no_window_popen() -> None:
 
     create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     create_new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+    detached = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
     orig_popen = subprocess.Popen
 
     class _NoWindowPopen(orig_popen):
@@ -108,7 +109,7 @@ def _install_no_window_popen() -> None:
 
         def __init__(self, *args, **kwargs):
             flags = int(kwargs.get("creationflags", 0) or 0)
-            if not (flags & create_no_window) and not (flags & create_new_console):
+            if not (flags & create_no_window) and not (flags & create_new_console) and not (flags & detached):
                 kwargs["creationflags"] = flags | create_no_window
             super().__init__(*args, **kwargs)
 
@@ -261,6 +262,21 @@ def _run_desktop() -> None:
         return False
 
     def _run_web_fallback(reason: str) -> None:
+        if is_silent:
+            msg = (
+                f"WebView2 / pywebview is unavailable ({reason}).\n\n"
+                "Please run run.bat --web to launch OpenShorts Studio Pro in your default web browser."
+            )
+            print(f"[ERROR] {msg}")
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(0, msg, "OpenShorts Studio Pro", 0x30)
+                except Exception:
+                    pass
+            _shutdown_backend(server_holder["server"], server_holder["thread"])
+            return
+
         print(f"[INFO] {reason} Starting server and opening {url} in default browser...")
         _ensure_server_started()
         webbrowser.open(url)

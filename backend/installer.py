@@ -262,6 +262,12 @@ def ensure_whisper_cli() -> Dict[str, Any]:
         if not _binary_runs(whisper_bin, "-h") and use_cuda and cpu_url:
             print("  [WARN] CUDA whisper-cli smoke test failed; falling back to CPU build...")
             _download_file(cpu_url, tmp_cpu_zip, "whisper-cli (CPU fallback)")
+            for stale_name in os.listdir(RELEASE_BIN_DIR):
+                if stale_name.lower().endswith(".dll") or stale_name.lower() == "whisper-cli.exe":
+                    try:
+                        os.remove(os.path.join(RELEASE_BIN_DIR, stale_name))
+                    except OSError:
+                        pass
             _extract_release_bins(tmp_cpu_zip, RELEASE_BIN_DIR)
             whisper_bin = hw.find_binary("whisper-cli", subdirs=["Release"])
 

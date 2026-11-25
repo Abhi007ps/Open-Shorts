@@ -798,58 +798,90 @@ def download_stream_audio(
 def scan_audio_energy_peaks(
     audio_path: str,
     duration: float,
-    top_k: int = 8
+    top_k: int = 8,
+    progress_callback: Optional[Any] = None,
+    cancel_event: Optional[threading.Event] = None
 ) -> List[Dict[str, Any]]:
     """
     Rapidly scans the downloaded stream audio track for acoustic energy surges
     (screaming, laughter, high-energy emotional reactions, gunshots/action).
-    Uses vocal-bandpass (400Hz-3200Hz) to filter out car engine drone (<300Hz)
-    and measures dynamic vocal burst ratio against a rolling baseline.
+    Uses 4000 Hz vocal-bandpass PCM with NumPy/strided fast scanning, live progress,
+    and JobCancelledError cancellation support.
     """
     from backend.hardware import FFMPEG_BIN
+    from backend.transcriber import JobCancelledError
     import struct
     import math
 
     if not audio_path or not os.path.exists(audio_path):
         return []
 
-    peaks = []
+    if cancel_event and cancel_event.is_set():
+        raise JobCancelledError("Audio energy scan cancelled by user")
+
     try:
-        # Stream 8kHz 16-bit mono PCM bandpassed to human vocal range (400Hz-3200Hz)
-        # This completely ignores low car engine rumble (<300Hz) and high-frequency hiss
+        import numpy as np
+        has_np = True
+    except ImportError:
+        np = None
+        has_np = False
+
+    peaks = []
+    proc = None
+    try:
+        # Stream 4kHz 16-bit mono PCM bandpassed to core vocal energy range (400Hz-1900Hz)
+        sample_rate = 4000
         cmd = [
             FFMPEG_BIN, "-v", "error",
             "-i", audio_path,
-            "-af", "highpass=f=400,lowpass=f=3200",
+            "-af", "highpass=f=400,lowpass=f=1900",
             "-ac", "1",
-            "-ar", "8000",
+            "-ar", str(sample_rate),
             "-f", "s16le",
             "-"
         ]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        
-        # 4-second chunk windows (8000 samples/sec * 2 bytes/sample * 4 sec = 64,000 bytes)
+
+        # 4-second chunk windows (4000 samples/sec * 2 bytes/sample * 4 sec = 32,000 bytes)
         window_sec = 4.0
-        bytes_per_window = int(8000 * 2 * window_sec)
-        
+        bytes_per_window = int(sample_rate * 2 * window_sec)
+
         energies = []
         cur_time = 0.0
-        
+        last_pct = -1
+
         while True:
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Audio energy scan cancelled by user")
+
             raw_chunk = proc.stdout.read(bytes_per_window)
-            if not raw_chunk or len(raw_chunk) < 1000:
+            if not raw_chunk or len(raw_chunk) < 512:
                 break
             num_samples = len(raw_chunk) // 2
-            samples = struct.unpack(f"<{num_samples}h", raw_chunk[:num_samples*2])
-            rms = math.sqrt(sum(s * s for s in samples) / max(1, num_samples))
+            usable = raw_chunk[:num_samples * 2]
+            if has_np:
+                arr = np.frombuffer(usable, dtype=np.int16).astype(np.float32)
+                rms = float(np.sqrt(np.mean(arr * arr))) if arr.size > 0 else 0.0
+            else:
+                samples = struct.unpack(f"<{num_samples}h", usable)[::2]
+                rms = math.sqrt(sum(s * s for s in samples) / max(1, len(samples)))
+
             energies.append({
                 "time": cur_time,
                 "rms": rms
             })
             cur_time += window_sec
 
-        proc.stdout.close()
+            if progress_callback and duration > 0:
+                pct = min(73, max(65, 65 + int((cur_time / duration) * 8)))
+                if pct > last_pct:
+                    last_pct = pct
+                    progress_callback(pct, f"Scanning full-stream acoustic energy ({int(cur_time)}s / {int(duration)}s)...")
+
+        if proc.stdout:
+            proc.stdout.close()
         proc.wait()
+        proc = None
 
         if not energies:
             return []
@@ -911,8 +943,20 @@ def scan_audio_energy_peaks(
             if len(peaks) >= top_k:
                 break
 
+    except JobCancelledError:
+        raise
     except Exception as e:
         print(f"[WARN] Audio energy peak scan warning: {e}")
+    finally:
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     return peaks
 

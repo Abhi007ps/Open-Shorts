@@ -428,7 +428,7 @@ def _get_in_use_tools() -> set:
                 in_use.add("llm")
             elif any(k in step_l for k in ("whisper", "transcrib")):
                 in_use.add("transcription")
-            elif any(k in step_l for k in ("scanning acoustic", "energy")):
+            elif any(k in step_l for k in ("scanning acoustic", "scanning full-stream", "energy")):
                 in_use.add("ffmpeg")
             else:
                 in_use.add("ytdlp")
@@ -1113,9 +1113,19 @@ def _do_scan_stream_audio(req: ProbeStreamReq, cancel_event: Optional[threading.
         if cancel_event and cancel_event.is_set():
             raise JobCancelledError("Scan stream audio cancelled by user")
 
-        set_p("processing", 65, "Scanning acoustic excitement & energy peaks across full stream...")
-        top_k_audio = 14 if effective_dur > 10800 else 10
-        peaks = scan_audio_energy_peaks(audio_file_path, duration=effective_dur, top_k=top_k_audio)
+        heatmap_peaks = extract_heatmap_peaks(cached_info, duration=effective_dur, top_k=10)
+        if heatmap_peaks and len(heatmap_peaks) >= 4:
+            set_p("processing", 72, "Using YouTube Most Replayed heatmap peaks (skipping full audio scan)...")
+            peaks = heatmap_peaks
+        else:
+            set_p("processing", 65, "Scanning full-stream acoustic excitement & energy peaks...")
+            peaks = scan_audio_energy_peaks(
+                audio_file_path,
+                duration=effective_dur,
+                top_k=10,
+                progress_callback=lambda pct, msg: set_p("processing", pct, msg),
+                cancel_event=cancel_event
+            )
 
         if peaks:
             n_peaks = len(peaks)

@@ -16,13 +16,20 @@ echo     - Local Ollama AI + Qwen3 story brain (set OPENSHORTS_SKIP_OLLAMA=1 to 
 echo.
 
 :: Create Desktop shortcut on first run if missing
-set "SHORTCUT=%USERPROFILE%\Desktop\OpenShorts Studio.lnk"
-if not exist "%SHORTCUT%" (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT%'); $s.TargetPath = '%~dp0run.bat'; $s.WorkingDirectory = '%~dp0'; $s.Description = 'OpenShorts Studio Pro'; $s.Save()" >nul 2>&1
-    if exist "%SHORTCUT%" (
-        echo [OK] Created Desktop shortcut: OpenShorts Studio
-        echo.
-    )
-)
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$ws = New-Object -ComObject WScript.Shell; " ^
+    "$desk = [Environment]::GetFolderPath('Desktop'); " ^
+    "$lnk = Join-Path $desk 'OpenShorts Studio.lnk'; " ^
+    "if (-not (Test-Path $lnk)) { " ^
+    "  $s = $ws.CreateShortcut($lnk); " ^
+    "  $s.TargetPath = \"$env:SystemRoot\System32\wscript.exe\"; " ^
+    "  $s.Arguments = '\"%~dp0launch_studio.vbs\"'; " ^
+    "  $s.WorkingDirectory = '%~dp0'; " ^
+    "  $ico = Get-ChildItem -Path '%~dp0assets' -Filter '*.ico' -ErrorAction SilentlyContinue | Select-Object -First 1; " ^
+    "  if ($ico) { $s.IconLocation = $ico.FullName } else { $s.IconLocation = \"$env:SystemRoot\System32\imageres.dll,18\" }; " ^
+    "  $s.Description = 'OpenShorts Studio - AI Highlights and Viral Auto-Clipper'; " ^
+    "  $s.Save(); " ^
+    "  Write-Host '[OK] Created Desktop shortcut: OpenShorts Studio'; " ^
+    "}" >nul 2>&1
 
 call "%~dp0run.bat" %*
