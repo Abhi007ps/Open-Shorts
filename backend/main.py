@@ -159,6 +159,14 @@ def _tool_in_use(*tool_ids: str):
                 else:
                     ACTIVE_TOOL_COUNTS[tid] = nxt
 
+def _reset_progress_for_job(job_type: str, new_status: str, message: str):
+    if job_type in ("scan_stream_audio", "load_stream_range"):
+        CURRENT_STATE["stream_progress"] = {"status": new_status, "percent": 0, "step": message}
+    elif job_type in ("transcribe", "transcribe_all_clips"):
+        CURRENT_STATE["transcribe_progress"] = {"status": new_status, "percent": 0, "step": message}
+    elif job_type in ("export_clip", "export_all"):
+        CURRENT_STATE["export_progress"] = {"status": new_status, "current_clip": 0, "total_clips": 0, "percent": 0, "title": message}
+
 def start_background_job(job_type: str, worker_fn: Callable[[str, threading.Event, Callable[[int, Optional[str]], None]], Any]) -> Dict[str, Any]:
     job_id = uuid.uuid4().hex[:12]
     cancel_event = threading.Event()
@@ -221,6 +229,7 @@ def start_background_job(job_type: str, worker_fn: Callable[[str, threading.Even
                         JOBS[job_id]["status"] = "cancelled"
                         JOBS[job_id]["step"] = "Cancelled"
                         JOBS[job_id]["error"] = "Job cancelled by user"
+                        _reset_progress_for_job(job_type, "cancelled", "Cancelled by user")
                     else:
                         JOBS[job_id]["status"] = "completed"
                         JOBS[job_id]["percent"] = 100
@@ -232,6 +241,7 @@ def start_background_job(job_type: str, worker_fn: Callable[[str, threading.Even
                     JOBS[job_id]["status"] = "cancelled"
                     JOBS[job_id]["step"] = "Cancelled"
                     JOBS[job_id]["error"] = "Job cancelled by user"
+                _reset_progress_for_job(job_type, "cancelled", "Cancelled by user")
         except Exception as e:
             with STATE_LOCK:
                 if job_id in JOBS:
@@ -239,10 +249,12 @@ def start_background_job(job_type: str, worker_fn: Callable[[str, threading.Even
                         JOBS[job_id]["status"] = "cancelled"
                         JOBS[job_id]["step"] = "Cancelled"
                         JOBS[job_id]["error"] = "Job cancelled by user"
+                        _reset_progress_for_job(job_type, "cancelled", "Cancelled by user")
                     else:
                         JOBS[job_id]["status"] = "error"
                         JOBS[job_id]["error"] = str(e)
                         JOBS[job_id]["step"] = f"Error: {e}"
+                        _reset_progress_for_job(job_type, "error", f"Error: {e}")
 
     t = threading.Thread(target=runner, daemon=True)
     t.start()
@@ -1456,6 +1468,9 @@ def _do_transcribe(req: TranscribeReq, cancel_event: Optional[threading.Event] =
         if progress_cb:
             progress_cb(sub_percent, step_desc)
 
+    if req.model_name and req.model_name not in ALLOWED_WHISPER_MODELS:
+        raise HTTPException(status_code=400, detail="Unsupported Whisper model")
+
     init_step = "Extracting 16kHz audio & applying speech normalization..."
     CURRENT_STATE["transcribe_progress"] = {
         "status": "running",
@@ -1560,6 +1575,8 @@ def _do_transcribe(req: TranscribeReq, cancel_event: Optional[threading.Event] =
         return {"status": "success", "count": len(subtitles), "subtitles": CURRENT_STATE["subtitles"]}
     except JobCancelledError:
         CURRENT_STATE["transcribe_progress"] = {"status": "cancelled", "step": "Transcription cancelled by user", "percent": 0}
+        raise
+    except HTTPException:
         raise
     except Exception as e:
         import traceback
