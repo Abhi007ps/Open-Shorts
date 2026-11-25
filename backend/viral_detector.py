@@ -450,6 +450,33 @@ HOOK_QUESTION_STARTERS = (
     "why is", "tell me", "hold on", "who", "where", "how"
 )
 
+def _flatten_subtitle_words(subtitles: Optional[List[Dict[str, Any]]]) -> List[Tuple[float, float]]:
+    """Extracts sorted (start, end) intervals from word-level timings, falling back to segment bounds."""
+    if not subtitles:
+        return []
+    intervals: List[Tuple[float, float]] = []
+    for s in subtitles:
+        words = s.get("words")
+        if isinstance(words, list) and len(words) > 0:
+            for w in words:
+                try:
+                    ws = float(w.get("start", 0))
+                    we = float(w.get("end", ws))
+                    if we > ws:
+                        intervals.append((ws, we))
+                except Exception:
+                    pass
+        else:
+            try:
+                ss = float(s.get("start", 0))
+                se = float(s.get("end", ss))
+                if se > ss:
+                    intervals.append((ss, se))
+            except Exception:
+                pass
+    intervals.sort(key=lambda x: x[0])
+    return intervals
+
 def snap_to_clean_boundaries(
     start: float, 
     end: float, 
@@ -481,7 +508,20 @@ def snap_to_clean_boundaries(
 
     # --- Mode A: Word-Level Subtitle Sentence & Narrative Snapping ---
     if subtitles and len(subtitles) > 0:
-        # 1. The Hook (0-3s): Snap start to earliest curiosity question or bold statement with -40ms vocal attack lead
+        flat_words = _flatten_subtitle_words(subtitles)
+
+        def _midpoint_start(w_start: float) -> float:
+            prev_ends = [we for (ws, we) in flat_words if we <= w_start + 1e-6 and ws < w_start]
+            if prev_ends:
+                gap = max(0.0, w_start - max(prev_ends))
+                lead = min(0.35, gap / 2.0)
+                if gap >= 0.08:
+                    lead = max(0.04, lead)
+            else:
+                lead = 0.35
+            return max(0.0, round(w_start - lead, 3))
+
+        # 1. The Hook (0-3s): Snap start to earliest curiosity question or bold statement with silence-midpoint lead
         hook_candidate_subs = [s for s in subtitles if abs(float(s.get("start", 0)) - start) <= 3.5]
         hook_snapped = False
         
@@ -492,7 +532,8 @@ def snap_to_clean_boundaries(
             
             # Prioritize curiosity hook onset (e.g. "Wait, can I...", "Bro look at this")
             if any(text.startswith(kw) for kw in HOOK_QUESTION_STARTERS):
-                best_start = max(0.0, round(s_start - 0.04, 2))
+                w0_s = float(s["words"][0].get("start", s_start)) if (s.get("words") and len(s["words"]) > 0) else s_start
+                best_start = _midpoint_start(w0_s)
                 meta["cold_open_applied"] = True
                 meta["narrative_arc"]["hook_detected"] = True
                 meta["snap_mode"] = "narrative_hook_onset"
@@ -501,26 +542,34 @@ def snap_to_clean_boundaries(
             elif words and words[0] in COLD_OPEN_FILLER and "words" in s and s["words"]:
                 punchy_w = next((w for w in s["words"] if w.get("word", "").lower() not in COLD_OPEN_FILLER), None)
                 if punchy_w and float(punchy_w.get("start", s_start)) >= s_start:
-                    best_start = max(0.0, round(float(punchy_w["start"]) - 0.04, 2))
+                    best_start = _midpoint_start(float(punchy_w["start"]))
                     meta["cold_open_applied"] = True
                     meta["snap_mode"] = "word_level_transcript"
                     hook_snapped = True
                     break
                     
         if not hook_snapped and hook_candidate_subs:
-            best_start = max(0.0, round(float(hook_candidate_subs[0].get("start", start)) - 0.05, 2))
+            first_sub = hook_candidate_subs[0]
+            w0_s = float(first_sub["words"][0].get("start", first_sub.get("start", start))) if (first_sub.get("words") and len(first_sub["words"]) > 0) else float(first_sub.get("start", start))
+            best_start = _midpoint_start(w0_s)
             meta["cold_open_applied"] = True
             meta["snap_mode"] = "word_level_transcript"
                 
-        # 2. The Punchline Snap: Cut immediately after the punchline (+0.35s) with zero awkward silence
+        # 2. The Punchline Snap: Cut cleanly at silence midpoint after punchline
         ending_subs = [s for s in subtitles if abs(float(s.get("end", 0)) - end) <= 4.0]
         if ending_subs:
             last_sub = ending_subs[-1]
             if "words" in last_sub and last_sub["words"]:
-                last_word_end = float(last_sub["words"][-1].get("end", last_sub.get("end", end)))
-                best_end = round(last_word_end + 0.35, 2)  # Crisp Punchline Snap with zero dead air
+                word_end = float(last_sub["words"][-1].get("end", last_sub.get("end", end)))
             else:
-                best_end = round(float(last_sub.get("end", end)) + 0.35, 2)
+                word_end = float(last_sub.get("end", end))
+            next_starts = [ws for (ws, we) in flat_words if ws >= word_end - 1e-6 and we > word_end]
+            if next_starts:
+                gap = max(0.0, min(next_starts) - word_end)
+                tail = min(0.45, gap / 2.0)
+            else:
+                tail = 0.35
+            best_end = round(word_end + tail, 3)
             meta["snap_mode"] = "punchline_snap"
 
     # --- Mode B: Audio Vocal Energy Envelope Snapping (VAD) ---
@@ -1117,7 +1166,8 @@ def detect_viral_moments(
             overlap_end = min(cand_end, sel["end"])
             if overlap_end > overlap_start:
                 overlap_dur = overlap_end - overlap_start
-                if (overlap_dur / cand["duration"]) > 0.35 or (overlap_dur / sel["duration"]) > 0.35:
+                shorter_dur = max(1e-6, min(cand["duration"], sel["duration"]))
+                if (overlap_dur / shorter_dur) >= 0.25:
                     overlap_found = True
                     break
         if not overlap_found:

@@ -399,11 +399,31 @@ def evaluate_narrative_micro_arc(
     if matching_subs:
         first_sub_start = float(matching_subs[0].get("start", start_t))
         if abs(first_sub_start - start_t) <= 3.0:
-            hook_word_start = max(0.0, first_sub_start - 0.04)
+            prev_ends = [
+                float(s.get("end", 0)) for s in subtitles
+                if float(s.get("end", 0)) <= first_sub_start + 1e-6 and float(s.get("start", 0)) < first_sub_start
+            ]
+            if prev_ends:
+                gap_s = max(0.0, first_sub_start - max(prev_ends))
+                lead = min(0.35, gap_s / 2.0)
+                if gap_s >= 0.08:
+                    lead = max(0.04, lead)
+            else:
+                lead = 0.35
+            hook_word_start = max(0.0, round(first_sub_start - lead, 3))
 
         last_sub_end = float(matching_subs[-1].get("end", end_t))
         if last_sub_end > climax_t and (last_sub_end - climax_t) <= 6.0:
-            punchline_end = last_sub_end + 0.35
+            next_starts = [
+                float(s.get("start", 0)) for s in subtitles
+                if float(s.get("start", 0)) >= last_sub_end - 1e-6 and float(s.get("end", 0)) > last_sub_end
+            ]
+            if next_starts:
+                gap_e = max(0.0, min(next_starts) - last_sub_end)
+                tail = min(0.45, gap_e / 2.0)
+            else:
+                tail = 0.35
+            punchline_end = round(last_sub_end + tail, 3)
 
         for s in matching_subs:
             txt = s.get("text", "").strip()
@@ -766,7 +786,8 @@ Respond ONLY in valid JSON matching this schema:
             for os, oe in seen_intervals:
                 if max(s, os) < min(e, oe):
                     overlap = min(e, oe) - max(s, os)
-                    if (overlap / max(1.0, e - s)) > 0.35 or (overlap / max(1.0, oe - os)) > 0.35:
+                    shorter = max(1e-6, min(e - s, oe - os))
+                    if (overlap / shorter) >= 0.25:
                         return True
             return False
 

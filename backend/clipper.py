@@ -13,6 +13,7 @@ from backend.hardware import FFMPEG_BIN, FFPROBE_BIN, REALESRGAN_BIN, get_best_e
 
 OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "outputs"))
 TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "temp"))
+METADATA_SCRUB = ["-map_metadata", "-1", "-map_chapters", "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1"]
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
@@ -908,7 +909,7 @@ def render_clip(
     audio_render_args = []
     if has_audio:
         if use_audio_mastering:
-            af_str = "asetpts=PTS-STARTPTS,highpass=f=70,acompressor=threshold=-18dB:ratio=3.5:attack=5:release=120:makeup=2,loudnorm=I=-14:TP=-1.5:LRA=11"
+            af_str = "asetpts=PTS-STARTPTS,highpass=f=70,acompressor=threshold=-18dB:ratio=3.5:attack=5:release=120:makeup=2,loudnorm=I=-14:TP=-2.0:LRA=11"
         else:
             af_str = "asetpts=PTS-STARTPTS"
         audio_render_args.extend(["-af", af_str])
@@ -928,6 +929,7 @@ def render_clip(
     full_cmd.extend(audio_render_args)
     full_cmd.extend([
         "-t", str(duration),
+        *METADATA_SCRUB,
         "-movflags", "+faststart",
         output_path
     ])
@@ -1056,6 +1058,7 @@ def render_clip(
             fallback_cmd.extend(audio_render_args)
             fallback_cmd.extend([
                 "-t", str(duration),
+                *METADATA_SCRUB,
                 "-movflags", "+faststart",
                 output_path
             ])

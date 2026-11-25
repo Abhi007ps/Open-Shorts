@@ -70,7 +70,7 @@ OpenShorts Studio Pro features an obsidian dark-mode interface with a 2-pane Non
 - **Minimal Sans**: Crisp modern subtitle typography without heavy outlines or boxes.
 
 ### Broadcast Audio Mastering (`-14 LUFS`):
-- Automatically applies high-pass filtering, broadcast compression, and `-14 LUFS` EBU R128 loudness normalization (`loudnorm=I=-14:TP=-1.5:LRA=11`) with 192 kbps AAC encoding so clips sound loud and punchy on mobile speakers.
+- Automatically applies high-pass filtering, broadcast compression, and `-14 LUFS` EBU R128 loudness normalization (`loudnorm=I=-14:TP=-2.0:LRA=11`) with 192 kbps AAC encoding so clips sound loud and punchy on mobile speakers.
 
 ### "Words Shown at a Time" (Per-Screen Chunking):
 - Choose between `1 Word (Punchy)`, `2 Words`, `3 Words (Viral Sweet-Spot)`, `4 Words`, `5 Words`, or `Full Phrase`.
