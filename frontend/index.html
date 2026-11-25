@@ -973,7 +973,14 @@
         <!-- Canvas Screen -->
         <div id="phone-screen">
           <canvas id="preview-canvas" width="540" height="960" style="display: none;"></canvas>
-          <img id="preview-img" alt="Preview frame" style="display: block;">
+          <img id="preview-img" alt="Preview frame" style="display: none;">
+          <div id="preview-empty-state" class="preview-empty-state">
+            <div class="preview-empty-icon">
+              <i class="fa-solid fa-film"></i>
+            </div>
+            <div class="preview-empty-title">No Video Loaded</div>
+            <div class="preview-empty-subtitle">Drop a video, enter a path, or paste a stream link to start</div>
+          </div>
           <video id="preview-source-video" playsinline muted style="position: absolute; opacity: 0.001; pointer-events: none; width: 1px; height: 1px; z-index: -10;"></video>
           <div id="preview-loading" style="position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(7, 9, 14, 0.7); z-index: 15;">
             <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 28px; color: var(--accent);"></i>

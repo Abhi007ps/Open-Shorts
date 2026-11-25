@@ -1,5 +1,6 @@
 // State
 const state = {
+  videoLoaded: false,
   videoPath: "",
   videoMeta: null,
   clips: [],
@@ -484,15 +485,68 @@ document.addEventListener("DOMContentLoaded", () => {
   safeInit(loadMasterTemplate, "loadMasterTemplate");
   safeInit(fetchOutputs, "fetchOutputs");
 
+function setPreviewEmptyState(isEmpty) {
+  state.videoLoaded = !isEmpty;
+  const emptyEl = document.getElementById("preview-empty-state");
+  const img = document.getElementById("preview-img");
+  const canvas = document.getElementById("preview-canvas");
+  const loading = document.getElementById("preview-loading");
+  const controls = document.querySelector(".player-controls");
+  const srcVid = document.getElementById("preview-source-video");
+  const curTimeEl = document.getElementById("player-cur-time");
+  const totalTimeEl = document.getElementById("player-total-time");
+
+  if (isEmpty) {
+    if (typeof stopPlayableClipPreview === "function") {
+      try { stopPlayableClipPreview(); } catch (_) {}
+    }
+    if (emptyEl) emptyEl.style.display = "flex";
+    if (img) {
+      img.style.display = "none";
+      img.removeAttribute("src");
+    }
+    if (canvas) {
+      canvas.style.display = "none";
+      const ctx = canvas.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    if (loading) loading.style.display = "none";
+    if (srcVid) {
+      try {
+        srcVid.pause();
+        srcVid.removeAttribute("src");
+        srcVid.load();
+      } catch (_) {}
+    }
+    if (curTimeEl) curTimeEl.innerText = "00:00";
+    if (totalTimeEl) totalTimeEl.innerText = "00:00";
+    if (controls) controls.classList.add("is-disabled");
+    const cropCanvas = document.getElementById("webcam-crop-canvas") || document.getElementById("cam-crop-canvas");
+    if (cropCanvas) {
+      const cctx = cropCanvas.getContext("2d");
+      if (cctx) cctx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    }
+    if (typeof renderClips === "function") renderClips();
+  } else {
+    if (emptyEl) emptyEl.style.display = "none";
+    if (controls) controls.classList.remove("is-disabled");
+  }
+}
+
   // Check if a video is already loaded on the server
   fetch("/api/status")
     .then(r => r.json())
     .then(data => {
       if (data.video_loaded && data.current_video) {
+        setPreviewEmptyState(false);
         loadSource(data.current_video);
+      } else {
+        setPreviewEmptyState(true);
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      setPreviewEmptyState(true);
+    });
 });
 
 // Tab Switching
@@ -1616,6 +1670,11 @@ function initEventListeners() {
         // Clear local storage & session storage
         localStorage.clear();
         sessionStorage.clear();
+        state.videoPath = "";
+        state.videoMeta = null;
+        state.clips = [];
+        state.subtitles = [];
+        setPreviewEmptyState(true);
 
         alert("✨ Engine completely reset to clean slate! OpenShorts Studio will now reload fresh.");
         window.location.reload();
@@ -1807,6 +1866,8 @@ async function uploadFile(file) {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           const data = JSON.parse(xhr.responseText);
+          state.videoLoaded = true;
+          setPreviewEmptyState(false);
           state.videoPath = data.video_path;
           state.videoMeta = data.meta;
           state.clips = initClipsMetadata(data.clips);
@@ -1917,6 +1978,8 @@ async function loadSource(path, isDemo = false, customTitle = null, customScore 
     if (statusBar) statusBar.style.width = "100%";
     if (statusPct) statusPct.innerText = "100%";
 
+    state.videoLoaded = true;
+    setPreviewEmptyState(false);
     state.videoPath = data.video_path || path;
     state.videoMeta = data.meta;
     if (!data.clips || data.clips.length === 0) {
@@ -2624,6 +2687,16 @@ function renderClips() {
   container.innerHTML = "";
   
   if (state.clips.length === 0) {
+    if (!state.videoLoaded) {
+      container.innerHTML = `
+        <div style="padding: 24px 16px; text-align: center; background: rgba(0,0,0,0.2); border: 1px dashed rgba(255,255,255,0.1); border-radius: var(--radius-md); margin: 6px 0;">
+          <div style="font-size: 22px; margin-bottom: 6px; color: var(--text-muted);"><i class="fa-solid fa-film"></i></div>
+          <p style="font-size: 12px; color: var(--text-muted); margin: 0; line-height: 1.5;">
+            No clips yet — load a video or scan a stream above
+          </p>
+        </div>`;
+      return;
+    }
     container.innerHTML = `
       <div style="padding: 28px 16px; text-align: center; background: rgba(0,0,0,0.25); border: 2px dashed rgba(245, 158, 11, 0.35); border-radius: var(--radius-md); margin: 6px 0;">
         <div style="font-size: 28px; margin-bottom: 8px; color: var(--accent-gold);"><i class="fa-solid fa-bolt"></i></div>
@@ -3566,6 +3639,7 @@ function addManualSubtitle() {
 
 // Live Preview
 function requestPreviewUpdate() {
+  if (!state.videoLoaded) return;
   // If in Play Mode or canvas preview is active: live canvas re-render
   const canvas = document.getElementById("preview-canvas");
   const sourceVid = document.getElementById("preview-source-video");
@@ -3580,6 +3654,7 @@ function requestPreviewUpdate() {
 }
 
 async function triggerPreview(immediate = false) {
+  if (!state.videoLoaded) return;
   if (state.isRenderingPreview && !immediate) return;
   state.isRenderingPreview = true;
 
@@ -3866,7 +3941,9 @@ function initWebcamCropCanvas() {
 
   const sourceImg = new Image();
   sourceImg.crossOrigin = "anonymous";
-  sourceImg.src = "/storage/temp/source_frame.jpg?t=" + Date.now();
+  if (state.videoLoaded) {
+    sourceImg.src = "/storage/temp/source_frame.jpg?t=" + Date.now();
+  }
 
   let vidW = 640;
   let vidH = 360;

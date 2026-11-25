@@ -302,51 +302,25 @@ def ensure_ollama_daemon():
 ensure_ollama_daemon()
 
 def load_session_state():
+    """
+    Restores only the custom export directory on startup so the studio launches
+    into a clean empty workspace while preserving saved exports and master template.
+    """
     global CURRENT_EXPORT_DIR
+    CURRENT_STATE["video_path"] = ""
+    CURRENT_STATE["video_meta"] = {}
+    CURRENT_STATE["clips"] = []
+    CURRENT_STATE["subtitles"] = []
+    CURRENT_EXPORT_DIR = OUTPUTS_DIR
+
     if os.path.exists(SESSION_STATE_FILE):
         try:
             with open(SESSION_STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                vpath = data.get("video_path")
-                meta = data.get("video_meta", {})
-                # If loaded video is vertical (e.g. 1080x1920 short), discard and switch to true 16:9 stream
-                if meta.get("width", 0) > 0 and meta.get("width", 0) < meta.get("height", 0):
-                    vpath = None
-                if vpath and os.path.exists(vpath):
-                    CURRENT_STATE["video_path"] = vpath
-                    CURRENT_STATE["video_meta"] = meta
-                    CURRENT_STATE["subtitles"] = data.get("subtitles", [])
-                    CURRENT_STATE["clips"] = data.get("clips", [])
                 if data.get("export_dir") and os.path.exists(data.get("export_dir")):
                     CURRENT_EXPORT_DIR = data["export_dir"]
-                else:
-                    CURRENT_EXPORT_DIR = OUTPUTS_DIR
         except Exception as e:
             print(f"Error loading session state: {e}")
-
-    # If no valid 16:9 stream video is active, auto-load standard 16:9 demo video
-    if not CURRENT_STATE.get("video_path") or not os.path.exists(CURRENT_STATE["video_path"]):
-        demo = get_demo_video()
-        demo_path = demo.get("path") if demo else None
-        if demo_path and os.path.exists(demo_path):
-            CURRENT_STATE["video_path"] = demo_path
-            CURRENT_STATE["video_meta"] = probe_video(demo_path)
-
-    # Guarantee 16:9 source_frame.jpg exists and matches current stream video
-    if CURRENT_STATE.get("video_path") and os.path.exists(CURRENT_STATE["video_path"]):
-        source_frame_path = os.path.join(TEMP_DIR, "source_frame.jpg")
-        try:
-            dur = CURRENT_STATE.get("video_meta", {}).get("duration", 30.0)
-            seek_pt = min(12.0, max(1.0, dur * 0.15))
-            subprocess.run([
-                FFMPEG_BIN, "-y",
-                "-ss", str(seek_pt),
-                "-i", CURRENT_STATE["video_path"],
-                "-vframes", "1",
-                source_frame_path
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        except Exception as e:
-            print(f"[WARN] Failed to generate 16:9 source frame on startup: {e}")
 
 load_session_state()
 
@@ -1249,6 +1223,27 @@ def api_scan_stream_audio(req: ProbeStreamReq, async_mode: bool = False):
         CURRENT_STATE["stream_progress"] = {"status": "error", "percent": 0, "step": str(e)}
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/api/clear_workspace")
+def api_clear_workspace(request: Request):
+    """
+    Clears only the active in-memory session (video_path, video_meta, clips, subtitles, temp source_frame.jpg)
+    WITHOUT deleting exported clips in storage/outputs/.
+    """
+    require_local_client(request)
+    with STATE_LOCK:
+        CURRENT_STATE["video_path"] = ""
+        CURRENT_STATE["video_meta"] = {}
+        CURRENT_STATE["clips"] = []
+        CURRENT_STATE["subtitles"] = []
+        source_frame_path = os.path.join(TEMP_DIR, "source_frame.jpg")
+        if os.path.exists(source_frame_path):
+            try:
+                os.remove(source_frame_path)
+            except Exception:
+                pass
+    return {"status": "success", "message": "Workspace cleared."}
+
+
 @app.post("/api/factory_reset")
 def api_factory_reset(request: Request):
     """
@@ -1300,13 +1295,6 @@ def api_factory_reset(request: Request):
                     os.remove(MASTER_TEMPLATE_FILE)
                 except Exception:
                     pass
-
-            # 5. Reload clean demo video if available
-            demo = get_demo_video()
-            demo_path = demo.get("path") if demo else None
-            if demo_path and os.path.exists(demo_path):
-                CURRENT_STATE["video_path"] = demo_path
-                CURRENT_STATE["video_meta"] = probe_video(demo_path)
 
         return {"status": "success", "message": "Engine completely reset to clean slate. Ready for a new user!"}
     except Exception as e:
