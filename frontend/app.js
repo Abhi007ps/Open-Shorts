@@ -459,45 +459,6 @@ async function runAsyncJob(endpoint, fetchOptions = {}, progressUiConfig = {}) {
 }
 
 
-// Initialization
-document.addEventListener("DOMContentLoaded", () => {
-  const safeInit = (fn, name) => {
-    try {
-      fn();
-    } catch (err) {
-      console.warn(`[Init] ${name} notice:`, err);
-    }
-  };
-
-  safeInit(initTabs, "initTabs");
-  safeInit(initSliders, "initSliders");
-  safeInit(initColors, "initColors");
-  safeInit(initPresets, "initPresets");
-  safeInit(initEventListeners, "initEventListeners");
-  safeInit(initDraggableSubtitle, "initDraggableSubtitle");
-  safeInit(initDraggableFacecam, "initDraggableFacecam");
-  safeInit(initWebcamCropCanvas, "initWebcamCropCanvas");
-  safeInit(initNeonControls, "initNeonControls");
-  safeInit(initDividerControls, "initDividerControls");
-  safeInit(initMasterTemplateControls, "initMasterTemplateControls");
-  safeInit(initFacecamShapeAndPosControls, "initFacecamShapeAndPosControls");
-  safeInit(initStreamUrlLoader, "initStreamUrlLoader");
-  safeInit(initFacecamArrowControls, "initFacecamArrowControls");
-  safeInit(initGameplayZoomAndPanControls, "initGameplayZoomAndPanControls");
-  safeInit(initEnhancePresets, "initEnhancePresets");
-  safeInit(initExportOptions, "initExportOptions");
-  safeInit(initHardwareDetection, "initHardwareDetection");
-  safeInit(initToolsStatus, "initToolsStatus");
-  safeInit(initPlayablePreview, "initPlayablePreview");
-  safeInit(initViralProfileControls, "initViralProfileControls");
-  safeInit(initLLMStatus, "initLLMStatus");
-  safeInit(initSafeZoneOverlay, "initSafeZoneOverlay");
-  safeInit(initRangeSliderProgress, "initRangeSliderProgress");
-  safeInit(initWorkspaceResizer, "initWorkspaceResizer");
-  
-  safeInit(loadMasterTemplate, "loadMasterTemplate");
-  safeInit(fetchOutputs, "fetchOutputs");
-
 function setPreviewEmptyState(isEmpty) {
   state.videoLoaded = !isEmpty;
   const emptyEl = document.getElementById("preview-empty-state");
@@ -545,6 +506,45 @@ function setPreviewEmptyState(isEmpty) {
     if (controls) controls.classList.remove("is-disabled");
   }
 }
+
+// Initialization
+document.addEventListener("DOMContentLoaded", () => {
+  const safeInit = (fn, name) => {
+    try {
+      fn();
+    } catch (err) {
+      console.warn(`[Init] ${name} notice:`, err);
+    }
+  };
+
+  safeInit(initTabs, "initTabs");
+  safeInit(initSliders, "initSliders");
+  safeInit(initColors, "initColors");
+  safeInit(initPresets, "initPresets");
+  safeInit(initEventListeners, "initEventListeners");
+  safeInit(initDraggableSubtitle, "initDraggableSubtitle");
+  safeInit(initDraggableFacecam, "initDraggableFacecam");
+  safeInit(initWebcamCropCanvas, "initWebcamCropCanvas");
+  safeInit(initNeonControls, "initNeonControls");
+  safeInit(initDividerControls, "initDividerControls");
+  safeInit(initMasterTemplateControls, "initMasterTemplateControls");
+  safeInit(initFacecamShapeAndPosControls, "initFacecamShapeAndPosControls");
+  safeInit(initStreamUrlLoader, "initStreamUrlLoader");
+  safeInit(initFacecamArrowControls, "initFacecamArrowControls");
+  safeInit(initGameplayZoomAndPanControls, "initGameplayZoomAndPanControls");
+  safeInit(initEnhancePresets, "initEnhancePresets");
+  safeInit(initExportOptions, "initExportOptions");
+  safeInit(initHardwareDetection, "initHardwareDetection");
+  safeInit(initToolsStatus, "initToolsStatus");
+  safeInit(initPlayablePreview, "initPlayablePreview");
+  safeInit(initViralProfileControls, "initViralProfileControls");
+  safeInit(initLLMStatus, "initLLMStatus");
+  safeInit(initSafeZoneOverlay, "initSafeZoneOverlay");
+  safeInit(initRangeSliderProgress, "initRangeSliderProgress");
+  safeInit(initWorkspaceResizer, "initWorkspaceResizer");
+  
+  safeInit(loadMasterTemplate, "loadMasterTemplate");
+  safeInit(fetchOutputs, "fetchOutputs");
 
   // Check if a video is already loaded on the server
   fetch("/api/status")
@@ -1565,7 +1565,19 @@ function initEventListeners() {
     // Strip quotes if user copied path from Windows Explorer
     path = path.replace(/^["'“”]+|["'“”]+$/g, '').trim();
     document.getElementById("input-video-path").value = path;
-    if (path) loadSource(path);
+    if (!path) return;
+    if (/^https?:\/\//i.test(path) || /^www\./i.test(path)) {
+      const streamUrlInput = document.getElementById("input-stream-url");
+      const btnProbe = document.getElementById("btn-probe-stream");
+      if (streamUrlInput) {
+        streamUrlInput.value = path;
+        document.getElementById("input-video-path").value = "";
+        showToast("Detected stream URL — probing in Stream Link Loader...");
+        if (btnProbe) btnProbe.click();
+        return;
+      }
+    }
+    loadSource(path);
   });
 
   // Drag and Drop & Browse file picker
@@ -6533,7 +6545,6 @@ function initStreamUrlLoader() {
         if (progressBox) progressBox.style.display = "none";
         showToast(`⚡ Audio-First scan complete (${data.audio_size_mb || 30} MB)! Discovered top viral moments.`);
       } catch (err) {
-        clearInterval(pInterval);
         if (progressBox) progressBox.style.display = "none";
         if (err.message && (err.message.toLowerCase().includes("bot") || err.message.toLowerCase().includes("sign in"))) {
           alert(
@@ -6624,7 +6635,6 @@ function initStreamUrlLoader() {
           if (progressBox) progressBox.style.display = "none";
         }, 2500);
       } catch (err) {
-        clearInterval(progressInterval);
         if (err.isCancelled) {
           showToast("Stream slice load cancelled.");
         } else if (err.message && (err.message.toLowerCase().includes("bot") || err.message.toLowerCase().includes("sign in"))) {

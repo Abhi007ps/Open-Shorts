@@ -607,30 +607,115 @@ def download_stream_slice(
     }
     apply_cookies_opt(ydl_opts)
 
+    direct_ok = False
+    slice_dur = max(1.0, float(end_sec) - float(start_sec))
     try:
         if cancel_event and cancel_event.is_set():
             raise JobCancelledError("Stream download cancelled by user")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+
+        # Fast Path: Extract direct stream URLs and run FFmpeg with live -progress pipe:1
+        probe_opts = {
+            "format": fmt,
+            "skip_download": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        apply_cookies_opt(probe_opts)
+        with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        req_fmts = info.get("requested_formats") or []
+        stream_inputs = []
+        if len(req_fmts) >= 2:
+            for rf in req_fmts[:2]:
+                u = rf.get("url")
+                proto = str(rf.get("protocol", "")).lower()
+                if u and proto in ("http", "https"):
+                    stream_inputs.append((u, rf.get("http_headers") or info.get("http_headers") or {}))
+                else:
+                    stream_inputs = []
+                    break
+        elif info.get("url") and str(info.get("protocol", "")).lower() in ("http", "https"):
+            stream_inputs.append((info["url"], info.get("http_headers") or {}))
+
+        if stream_inputs:
+            if progress_callback:
+                progress_callback(12, f"Streaming slice ({format_seconds_to_hms(start_sec)} to {format_seconds_to_hms(end_sec)})...")
+            ff_cmd = [FFMPEG_BIN, "-y", "-hide_banner", "-loglevel", "error"]
+            for u, hdrs in stream_inputs:
+                if hdrs:
+                    hdr_str = "".join(f"{k}: {v}\r\n" for k, v in hdrs.items() if k.lower() in ("user-agent", "referer", "cookie"))
+                    if hdr_str:
+                        ff_cmd.extend(["-headers", hdr_str])
+                ff_cmd.extend(["-ss", str(start_sec), "-t", str(slice_dur), "-i", u])
+            if len(stream_inputs) >= 2:
+                ff_cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
+            ff_cmd.extend(["-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", final_path])
+
+            proc = subprocess.Popen(ff_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+            try:
+                last_pct = 12
+                if proc.stdout:
+                    for line in proc.stdout:
+                        if cancel_event and cancel_event.is_set():
+                            proc.terminate()
+                            raise JobCancelledError("Stream download cancelled by user")
+                        line = line.strip()
+                        if line.startswith("out_time_us="):
+                            try:
+                                cur_sec = float(line.split("=", 1)[1]) / 1_000_000.0
+                                pct = min(93, max(12, 12 + int((cur_sec / slice_dur) * 81)))
+                                if pct > last_pct and progress_callback:
+                                    last_pct = pct
+                                    progress_callback(pct, f"Streaming slice ({format_seconds_to_hms(start_sec + cur_sec)} / {format_seconds_to_hms(end_sec)})...")
+                            except Exception:
+                                pass
+                proc.wait()
+                if proc.returncode == 0 and os.path.isfile(final_path) and os.path.getsize(final_path) > 10_000:
+                    direct_ok = True
+                    if progress_callback:
+                        progress_callback(95, "Finalizing cut & container...")
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
     except JobCancelledError:
-        for f in os.listdir(output_dir):
-            if f.startswith(session_id):
-                try:
-                    os.remove(os.path.join(output_dir, f))
-                except Exception:
-                    pass
+        if os.path.exists(final_path):
+            try:
+                os.remove(final_path)
+            except Exception:
+                pass
         raise
-    except Exception as e:
-        if cancel_event and cancel_event.is_set():
-            raise JobCancelledError("Stream download cancelled by user")
-        raise RuntimeError(format_stream_error(e))
+    except Exception:
+        direct_ok = False
+
+    if direct_ok:
+        downloaded_file = final_path
+    else:
+        try:
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Stream download cancelled by user")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except JobCancelledError:
+            for f in os.listdir(output_dir):
+                if f.startswith(session_id):
+                    try:
+                        os.remove(os.path.join(output_dir, f))
+                    except Exception:
+                        pass
+            raise
+        except Exception as e:
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelledError("Stream download cancelled by user")
+            raise RuntimeError(format_stream_error(e))
 
     # Find the newly downloaded file with our unique session prefix
-    downloaded_file = None
-    for f in os.listdir(output_dir):
-        if f.startswith(session_id) and (f.endswith(".mp4") or f.endswith(".mkv") or f.endswith(".webm")):
-            downloaded_file = os.path.join(output_dir, f)
-            break
+    downloaded_file = final_path if direct_ok else None
+    if not downloaded_file:
+        for f in os.listdir(output_dir):
+            if f.startswith(session_id) and (f.endswith(".mp4") or f.endswith(".mkv") or f.endswith(".webm")):
+                downloaded_file = os.path.join(output_dir, f)
+                break
 
     if not downloaded_file or not os.path.exists(downloaded_file):
         # Fallback search if title formatting differed
@@ -643,7 +728,9 @@ def download_stream_slice(
         raise RuntimeError("Failed to extract slice: output file not created.")
 
     # Remux or rename to clean standard MP4
-    if downloaded_file.endswith(".mp4"):
+    if downloaded_file == final_path:
+        pass
+    elif downloaded_file.endswith(".mp4"):
         if os.path.exists(final_path):
             try:
                 os.remove(final_path)
@@ -1010,15 +1097,15 @@ def transcribe_audio_peaks(
     os.makedirs(temp_dir, exist_ok=True)
 
     enriched = []
-    total = len(peaks)
-    for idx, peak in enumerate(peaks):
+    peaks_to_scan = peaks[:6]
+    total = len(peaks_to_scan)
+    for idx, peak in enumerate(peaks_to_scan):
         if cancel_event and cancel_event.is_set():
             raise JobCancelledError("Peak transcription cancelled by user")
         p_start = float(peak.get("start", 0))
         p_end = float(peak.get("end", p_start + 36))
-        # Expand window slightly for better context
-        extract_start = max(0, p_start - 3)
-        extract_dur = (p_end - p_start) + 6  # Add 3s before and 3s after
+        extract_start = max(0, p_start - 2)
+        extract_dur = min(24.0, max(12.0, (p_end - p_start) + 4.0))
 
         if progress_callback:
             pct = 92 + int((idx / max(1, total)) * 6)
@@ -1081,13 +1168,15 @@ def transcribe_audio_peaks(
                     text_lines.append(line)
                 spoken_text = " ".join(text_lines).strip()
 
-            # Enrich peak with transcript
+            # Enrich peak with transcript (fast snippet; full Qwen3 tournament runs next)
             peak_copy = dict(peak)
             if spoken_text and len(spoken_text) > 5:
                 peak_copy["spoken_text"] = spoken_text[:500]
                 peak_copy["has_transcript"] = True
-                # Update title with actual content via LLM or heuristic
-                peak_copy = _enrich_peak_title_with_dialogue(peak_copy, spoken_text)
+                snippet = spoken_text[:48].strip()
+                if len(spoken_text) > 48:
+                    snippet += "..."
+                peak_copy["title"] = f"Rank #{peak_copy.get('rank', idx + 1)} • \"{snippet}\""
             else:
                 peak_copy["spoken_text"] = "[Non-verbal vocal reaction]"
                 peak_copy["has_transcript"] = False
