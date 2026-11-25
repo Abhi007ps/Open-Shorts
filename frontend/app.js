@@ -57,14 +57,14 @@ const state = {
   subtitlesConfig: {
     enabled: true,
     font_family: "Montserrat ExtraBold",
-    font_size: 74,
+    font_size: 62,
     position_x: 50,
     position_y: 50,
-    style_preset: "skyglow",
-    primary_color: "#A8F0F2",
-    highlight_color: "#7DFF14",
+    style_preset: "studio_flow",
+    primary_color: "#FFFFFF",
+    highlight_color: "#38BDF8",
     outline_color: "#000000",
-    outline_width: 1,
+    outline_width: 2,
     shadow_depth: 2,
     is_uppercase: true,
     words_per_line: 4,
@@ -92,6 +92,10 @@ let previewDebounceTimer = null;
 
 function normalizeWhisperModelName(name) {
   return (name === "large-v3-turbo-q5_0" || name === "small.en") ? name : "small.en";
+}
+
+function normalizeStylePreset(preset) {
+  return (!preset || preset === "skyglow") ? "studio_flow" : preset;
 }
 
 // =========================================================================
@@ -1051,11 +1055,12 @@ function initPresets() {
       const style = btn.getAttribute("data-style");
       state.subtitlesConfig.style_preset = style;
       
-      if (style === "skyglow") {
-        setSubColors("#A8F0F2", "#7DFF14", "#000000", 1, "Montserrat ExtraBold");
+      if (style === "studio_flow" || style === "skyglow") {
+        state.subtitlesConfig.style_preset = "studio_flow";
+        setSubColors("#FFFFFF", "#38BDF8", "#000000", 2, "Montserrat ExtraBold");
         state.subtitlesConfig.position_y = 50;
         state.subtitlesConfig.position_x = 50;
-        state.subtitlesConfig.font_size = 74;
+        state.subtitlesConfig.font_size = 62;
         state.subtitlesConfig.words_per_line = 4;
         state.subtitlesConfig.is_uppercase = true;
         const fontSel = document.getElementById("select-font");
@@ -1066,8 +1071,8 @@ function initPresets() {
         if (valY) valY.innerText = "50%";
         const sliderSize = document.getElementById("slider-font-size");
         const valSize = document.getElementById("val-font-size");
-        if (sliderSize) sliderSize.value = 74;
-        if (valSize) valSize.innerText = "74px";
+        if (sliderSize) sliderSize.value = 62;
+        if (valSize) valSize.innerText = "62px";
         document.querySelectorAll("[data-words]").forEach(b => {
           b.classList.toggle("active", b.getAttribute("data-words") === "4");
         });
@@ -2290,6 +2295,7 @@ function syncUIFromState() {
     updateSubHandleUI();
   }
 
+  state.subtitlesConfig.style_preset = normalizeStylePreset(state.subtitlesConfig.style_preset);
   if (state.subtitlesConfig.style_preset) {
     document.querySelectorAll("[data-style]").forEach(b => {
       if (b.getAttribute("data-style") === state.subtitlesConfig.style_preset) {
@@ -2460,6 +2466,7 @@ async function loadMasterTemplate() {
     if (state.masterTemplate.subtitle_config) {
       state.subtitlesConfig = Object.assign({}, state.subtitlesConfig, state.masterTemplate.subtitle_config);
       state.subtitlesConfig.model_name = normalizeWhisperModelName(state.subtitlesConfig.model_name);
+      state.subtitlesConfig.style_preset = normalizeStylePreset(state.subtitlesConfig.style_preset);
     }
   }
 
@@ -5890,7 +5897,7 @@ function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
   const posY = cH * ((state.subtitlesConfig.position_y !== undefined ? state.subtitlesConfig.position_y : 82) / 100);
 
   ctx.save();
-  if (state.subtitlesConfig.style_preset === "skyglow") {
+  if (state.subtitlesConfig.style_preset === "studio_flow" || state.subtitlesConfig.style_preset === "skyglow") {
     ctx.font = `800 ${fontSize}px "Montserrat", "Arial Black", Impact, sans-serif`;
   } else {
     ctx.font = `900 ${fontSize}px "${fontFam}", Impact, sans-serif`;
@@ -5930,26 +5937,17 @@ function drawCanvasSubtitles(ctx, curTime, cW, cH, clip = null) {
         ctx.translate(-wordCenterX, -wordCenterY);
       }
 
-      if (state.subtitlesConfig.style_preset === "skyglow") {
-        if (isWordActive) {
-          ctx.save();
-          ctx.shadowColor = hlColor;
-          ctx.shadowBlur = 18;
-          ctx.strokeStyle = hlColor;
-          ctx.lineWidth = strokeW + 4;
-          ctx.strokeText(wItem.text, wordCenterX, wordCenterY);
-          ctx.restore();
-        } else {
-          ctx.save();
-          ctx.shadowColor = "rgba(0, 0, 0, 0.75)";
-          ctx.shadowBlur = 6;
-          ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
-          ctx.lineWidth = 1;
-          ctx.strokeText(wItem.text, wordCenterX, wordCenterY);
-          ctx.restore();
-        }
+      if (state.subtitlesConfig.style_preset === "studio_flow" || state.subtitlesConfig.style_preset === "skyglow") {
+        ctx.save();
+        ctx.shadowColor = "rgba(0, 0, 0, 0.78)";
+        ctx.shadowBlur = 10;
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.35)";
+        ctx.lineWidth = 1.6;
+        ctx.strokeText(wItem.text, wordCenterX, wordCenterY);
+        ctx.restore();
 
-        ctx.fillStyle = isWordActive ? hlColor : priColor;
+        const isUpcoming = (wItem.start > effectiveTime) && (wItem.start > (effectiveTime - clipStart));
+        ctx.fillStyle = isWordActive ? hlColor : (isUpcoming ? "#A1A1AA" : priColor);
         ctx.fillText(wItem.text, wordCenterX, wordCenterY);
         ctx.restore();
 

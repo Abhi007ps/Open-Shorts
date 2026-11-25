@@ -36,6 +36,8 @@ def ensure_skyglow_font() -> Tuple[str, str]:
 
     return ("Arial Black", FONTS_DIR)
 
+ensure_studio_font = ensure_skyglow_font
+
 def hex_to_ass_color(hex_str: str, alpha: int = 0) -> str:
     """
     Converts a hex color string like '#FFDE00' or 'FFDE00' to ASS format '&HAABBGGRR&'.
@@ -166,7 +168,7 @@ def _is_font_installed(font_name: str) -> bool:
 
 def resolve_font_family(font_family: str, style_preset: str = "") -> str:
     """Resolves font family with fallbacks for cross-platform portability."""
-    if style_preset == "skyglow":
+    if style_preset in ("studio_flow", "skyglow"):
         if not font_family or font_family in ("Montserrat ExtraBold", "Poppins Black", "Arial Black", ""):
             return ensure_skyglow_font()[0]
         return font_family
@@ -276,7 +278,8 @@ def generate_ass_subtitles(
     smooth fade-in with zero horizontal shifting, smooth phrase fade-out, 2-line auto-stacking,
     and Green/Cyan/Gold neon palette cycling.
     """
-    effective_font = resolve_font_family(font_family, style_preset)
+    effective_preset = "studio_flow" if style_preset in ("studio_flow", "skyglow") else style_preset
+    effective_font = resolve_font_family(font_family, effective_preset)
     sync_offset = float(sync_offset_ms or 0) / 1000.0
     # Calculate exact pixel position on canvas
     pos_x = int(play_res_x * (float(position_x) / 100.0))
@@ -284,7 +287,7 @@ def generate_ass_subtitles(
     pos_tag = f"{{\\an5\\pos({pos_x},{pos_y})}}"
     
     # Border style: 1 = outline + drop shadow, 3 = opaque / translucent box
-    border_style = 3 if style_preset == "box" else 1
+    border_style = 3 if effective_preset == "box" else 1
     
     ass_primary = hex_to_ass_color(primary_color)
     ass_highlight = hex_to_ass_color(highlight_color)
@@ -294,26 +297,17 @@ def generate_ass_subtitles(
     bold = -1 # True in ASS
     italic = 0 # Upright
 
-    if style_preset == "skyglow":
-        sky_style_lines = [
-            f"Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,118,100,3,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1"
-        ]
-        for t_name in ("green", "cyan", "peak"):
-            th = SKYGLOW_THEMES[t_name]
-            sz = int(round(font_size * th["size_mult"]))
-            sky_style_lines.append(
-                f"Style: Sky_{t_name},{effective_font},{sz},{th['fill']},&H000000FF&,{th['edge']},{th['shadow']},-1,{th['italic']},0,0,118,100,3,0,1,{th['edge_w']},{th['shadow_d']},5,60,60,60,1"
-            )
-            sky_style_lines.append(
-                f"Style: Sky_{t_name}_glow,{effective_font},{sz},{th['glow']},&H000000FF&,{th['glow']},{th['glow']},-1,{th['italic']},0,0,118,100,3,0,1,9,0,5,60,60,60,1"
-            )
-        styles_section = "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n" + "\n".join(sky_style_lines)
+    if effective_preset == "studio_flow":
+        styles_section = f"""[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: FlowShadow,{effective_font},{font_size},&HFF000000&,&H00000000&,&H58000000&,&H00000000&,-1,0,0,0,100,100,-0.5,0,1,6,0,5,60,60,60,1
+Style: FlowMain,{effective_font},{font_size},{ass_primary},{ass_highlight},&H25000000&,&H65000000&,-1,0,0,0,100,100,-0.5,0,1,1.6,2,5,60,60,60,1"""
     else:
         styles_section = f"""[V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,{effective_font},{font_size},{ass_primary},{ass_highlight},{ass_outline},{ass_back},{bold},{italic},0,0,100,100,1,0,{border_style},{outline_width},{shadow_depth},5,60,60,60,1"""
 
-    wrap_style = 2 if style_preset == "skyglow" else 0
+    wrap_style = 2 if effective_preset == "studio_flow" else 0
     header = f"""[Script Info]
 Title: OpenShorts Custom Template Subtitles
 ScriptType: v4.00+
@@ -345,13 +339,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
             })
     valid_segs.sort(key=lambda s: s["start"])
 
-    # Clamp end so consecutive segments never overlap
-    for k in range(len(valid_segs) - 1):
-        if valid_segs[k]["end"] > valid_segs[k + 1]["start"]:
-            valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.04, valid_segs[k + 1]["start"])
+    # Zero-gap phrase bridging for studio_flow (or standard non-overlap clamp for others)
+    if effective_preset == "studio_flow" and not is_preview:
+        for k in range(len(valid_segs)):
+            if k + 1 < len(valid_segs):
+                next_start = valid_segs[k + 1]["start"]
+                gap = next_start - valid_segs[k]["end"]
+                if 0.0 <= gap <= 0.40:
+                    valid_segs[k]["end"] = next_start
+                elif gap > 0.40:
+                    valid_segs[k]["end"] = min(valid_segs[k]["end"] + 0.14, next_start - 0.01)
+                else:
+                    valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.04, next_start)
+            else:
+                valid_segs[k]["end"] += 0.14
+            valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.05, valid_segs[k]["end"])
+    else:
+        for k in range(len(valid_segs) - 1):
+            if valid_segs[k]["end"] > valid_segs[k + 1]["start"]:
+                valid_segs[k]["end"] = max(valid_segs[k]["start"] + 0.04, valid_segs[k + 1]["start"])
 
-    prev_theme = ""
-    consec_cyan = 0
+    ass_dim = hex_to_ass_color("#A1A1AA")
 
     for seg_idx, seg in enumerate(valid_segs):
         start_t = seg["start"]
@@ -388,116 +396,97 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
             ]
 
         # ==========================================
-        # PRESET A: SkyGlow Measured Reference Engine
+        # PRESET A: Studio Flow Native-Libass Engine
         # ==========================================
-        if style_preset == "skyglow":
-            theme = _classify_skyglow_theme(text, cleaned_words, seg_idx, prev_theme, consec_cyan)
-            if theme == "cyan":
-                consec_cyan += 1
-            else:
-                consec_cyan = 0
-            prev_theme = theme
-
-            th = SKYGLOW_THEMES[theme]
-            theme_sz = int(round(font_size * th["size_mult"]))
-            line_h = int(round(theme_sz * 0.82))
-
-            t0 = start_t
-            if not is_preview:
-                if seg_idx + 1 < len(valid_segs):
-                    t_end = min(end_t + 0.35, valid_segs[seg_idx + 1]["start"])
-                else:
-                    t_end = end_t + 0.35
-                t_end = max(t0 + 0.05, t_end)
-            else:
-                t_end = max(t0 + 0.05, end_t)
-
+        if effective_preset == "studio_flow":
             num_w = len(cleaned_words)
             if num_w == 0:
                 continue
 
+            # Auto-wrap longer phrases into 2 balanced centered lines
+            split_idx = None
+            if num_w >= 4 and len(text) > 18:
+                best_k = max(1, min(num_w - 1, num_w // 2))
+                min_diff = 9999
+                for k in range(1, num_w):
+                    l1 = " ".join(w["word"] for w in cleaned_words[:k])
+                    l2 = " ".join(w["word"] for w in cleaned_words[k:])
+                    diff = abs(len(l1) - len(l2))
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_k = k
+                split_idx = best_k
+
+            def _join_flow(w_items):
+                out_s = ""
+                for idx_w, w_it in enumerate(w_items):
+                    out_s += w_it
+                    if idx_w < len(w_items) - 1:
+                        out_s += "\\N" if (split_idx is not None and idx_w == split_idx - 1) else " "
+                return out_s
+
+            plain_wrapped = _join_flow([w["word"] for w in cleaned_words])
+
             if is_preview:
-                toks = [w["word"] for w in cleaned_words]
-                wrapped_lines = _wrap_skyglow(toks, max_chars=20)
-                if len(wrapped_lines) == 1:
-                    line_ys = [pos_y]
-                else:
-                    line_ys = [int(round(pos_y - line_h * 0.38)), int(round(pos_y + line_h * 0.62))]
-                s_str = format_ass_timestamp(t0)
-                e_str = format_ass_timestamp(t_end)
-                for k, txt in enumerate(wrapped_lines):
-                    pos = f"{{\\an5\\pos({pos_x},{line_ys[k]})\\fscx118\\fscy100}}"
-                    lines.append(
-                        f"Dialogue: 0,{s_str},{e_str},Sky_{theme}_glow,,0,0,0,,{pos}{{\\blur12\\alpha&H88&}}{txt}"
-                    )
-                    lines.append(
-                        f"Dialogue: 1,{s_str},{e_str},Sky_{theme},,0,0,0,,{pos}{txt}"
-                    )
+                mid_idx = num_w // 2 if num_w > 1 else 0
+                prev_words = []
+                for j, cw in enumerate(cleaned_words):
+                    if j < mid_idx:
+                        prev_words.append(f"{{\\1c{ass_primary}}}{cw['word']}")
+                    elif j == mid_idx:
+                        prev_words.append(f"{{\\1c{ass_highlight}}}{cw['word']}")
+                    else:
+                        prev_words.append(f"{{\\1c{ass_dim}}}{cw['word']}")
+                main_body = _join_flow(prev_words)
+                lines.append(
+                    f"Dialogue: 0,{start_str},{end_str},FlowShadow,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})\\blur9}}{plain_wrapped}"
+                )
+                lines.append(
+                    f"Dialogue: 1,{start_str},{end_str},FlowMain,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})\\blur0.3}}{main_body}"
+                )
             else:
-                w_starts = [t0]
+                w_starts = [start_t]
                 for i in range(1, num_w):
-                    w_s = cleaned_words[i].get("start", t0)
+                    w_s = cleaned_words[i].get("start", start_t)
                     s_i = max(w_s, w_starts[i - 1] + 0.04)
-                    s_i = min(s_i, t_end - 0.04 * (num_w - i))
+                    s_i = min(s_i, end_t - 0.04 * (num_w - i))
                     w_starts.append(s_i)
 
-                for i in range(num_w):
-                    s = w_starts[i]
-                    end = w_starts[i + 1] if (i + 1 < num_w) else t_end
-                    end = max(s + 0.04, end)
-                    dur_ms = max(40, int(round((end - s) * 1000)))
-                    s_str = format_ass_timestamp(s)
-                    end_str = format_ass_timestamp(end)
+                total_ms = max(180, int(round((end_t - start_t) * 1000)))
+                anim = f"\\an5\\pos({pos_x},{pos_y})\\fad(75,110)\\fscx96\\fscy96\\t(0,{total_ms},\\fscx104\\fscy104)"
 
-                    toks = [w["word"] for w in cleaned_words[:i + 1]]
-                    wrapped_lines = _wrap_skyglow(toks, max_chars=20)
+                main_words = []
+                for j in range(num_w):
+                    w_str = cleaned_words[j]["word"]
+                    rel_s = max(0, int(round((w_starts[j] - start_t) * 1000)))
+                    rel_e = int(round((w_starts[j + 1] - start_t) * 1000)) if (j + 1 < num_w) else total_ms
 
-                    a = _grow(s - t0)
-                    b = _grow(end - t0)
-                    pop_ms = min(90, dur_ms)
-                    fade_ms = min(100, dur_ms)
-                    m = _grow((s - t0) + (pop_ms / 1000.0))
-
-                    fa_x, fa_y = round(a * 118), round(a * 100)
-                    fm_x, fm_y = round(m * 118), round(m * 100)
-                    fb_x, fb_y = round(b * 118), round(b * 100)
-                    ps_x, ps_y = round(a * 0.88 * 118), round(a * 0.88 * 100)
-
-                    if len(wrapped_lines) == 1:
-                        line_ys = [pos_y]
-                    else:
-                        line_ys = [int(round(pos_y - line_h * 0.38)), int(round(pos_y + line_h * 0.62))]
-
-                    for k, txt in enumerate(wrapped_lines):
-                        pos = f"{{\\an5\\pos({pos_x},{line_ys[k]})}}"
-                        grow_tag = f"{{\\fscx{fa_x}\\fscy{fa_y}\\t(0,{dur_ms},\\fscx{fb_x}\\fscy{fb_y})}}"
-                        tail_continue = f"\\t({pop_ms},{dur_ms},\\fscx{fb_x}\\fscy{fb_y})" if dur_ms > pop_ms + 15 else ""
-
-                        if k == len(wrapped_lines) - 1 and " " in txt:
-                            head, tail = txt.rsplit(" ", 1)
-                            glow_body = f"{{\\blur12\\alpha&H88&}}{head} {{\\blur12\\alpha&HFF&\\fscx{ps_x}\\fscy{ps_y}\\t(0,{fade_ms},\\alpha&H88&\\fscx{fm_x}\\fscy{fm_y}){tail_continue}}}{tail}"
-                            fill_body = f"{head} {{\\alpha&HFF&\\fscx{ps_x}\\fscy{ps_y}\\t(0,{fade_ms},\\alpha&H00&\\fscx{fm_x}\\fscy{fm_y}){tail_continue}}}{tail}"
-                        elif k == len(wrapped_lines) - 1:
-                            glow_body = f"{{\\blur12\\alpha&HFF&\\fscx{ps_x}\\fscy{ps_y}\\t(0,{fade_ms},\\alpha&H88&\\fscx{fm_x}\\fscy{fm_y}){tail_continue}}}{txt}"
-                            fill_body = f"{{\\alpha&HFF&\\fscx{ps_x}\\fscy{ps_y}\\t(0,{fade_ms},\\alpha&H00&\\fscx{fm_x}\\fscy{fm_y}){tail_continue}}}{txt}"
+                    if j == 0:
+                        if num_w > 1:
+                            w_tag = f"{{\\1c{ass_highlight}\\t({rel_e},{rel_e + 70},\\1c{ass_primary})}}{w_str}"
                         else:
-                            glow_body = f"{{\\blur12\\alpha&H88&}}{txt}"
-                            fill_body = txt
+                            w_tag = f"{{\\1c{ass_highlight}}}{w_str}"
+                    elif 0 < j < num_w - 1:
+                        w_tag = f"{{\\1c{ass_dim}\\t({rel_s},{rel_s + 50},\\1c{ass_highlight})\\t({rel_e},{rel_e + 70},\\1c{ass_primary})}}{w_str}"
+                    else:
+                        w_tag = f"{{\\1c{ass_dim}\\t({rel_s},{rel_s + 50},\\1c{ass_highlight})}}{w_str}"
+                    main_words.append(w_tag)
 
-                        lines.append(
-                            f"Dialogue: 0,{s_str},{end_str},Sky_{theme}_glow,,0,0,0,,{pos}{grow_tag}{glow_body}"
-                        )
-                        lines.append(
-                            f"Dialogue: 1,{s_str},{end_str},Sky_{theme},,0,0,0,,{pos}{grow_tag}{fill_body}"
-                        )
+                main_body = _join_flow(main_words)
+                lines.append(
+                    f"Dialogue: 0,{start_str},{end_str},FlowShadow,,0,0,0,,{{{anim}\\blur9}}{plain_wrapped}"
+                )
+                lines.append(
+                    f"Dialogue: 1,{start_str},{end_str},FlowMain,,0,0,0,,{{{anim}}}{main_body}"
+                )
 
         # ==========================================
         # PRESET B: Speed / Clean / Box / Other Styles
         # ==========================================
         else:
-            neon_glow = r"{\blur4}" if style_preset == "neon" else ""
+            neon_glow = r"{\blur4}" if effective_preset == "neon" else ""
             # 1. Multi-word segment with active karaoke word highlighting
-            if len(cleaned_words) > 1 and style_preset in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
+            if len(cleaned_words) > 1 and effective_preset in ("speed", "hormozi", "mrbeast", "neon", "box", "fire"):
                 num_w = len(cleaned_words)
                 w_starts = [start_t]
                 for i in range(1, num_w):

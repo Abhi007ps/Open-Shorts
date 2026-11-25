@@ -26,7 +26,7 @@
 - **Millisecond DTW & Phoneme Alignment**: Direct acoustic word-level timestamps via `whisper.cpp` (`large-v3-turbo-q5_0` & `small.en`) with optional Wav2Vec2 phoneme forced alignment.
 - **Zero-Blink Guarantee**: Strictly monotonic word intervals (`end >= start + 0.04s`) with gapless transitions inside phrases to prevent subtitle flickering.
 - **Jitter-Free Multi-Word Karaoke**: Multi-word lines retain stable font scaling and centered positioning while highlighted words transition smoothly.
-- **Viral Styling Presets**: Ready-to-use presets including **SkyGlow** (upright Poppins Black with dual-pass neon glow, 60fps subtle zoom, and per-character fade sweep), **Speed Viral**, **Dark Box**, and **Minimal Sans**.
+- **Viral Styling Presets**: Ready-to-use presets including **Studio Flow** (upright `Montserrat ExtraBold` with `FlowShadow` ambient lift, continuous 60fps subtle zoom, and 3-state word color transitions), **Speed Viral**, **Dark Box**, and **Minimal Sans**.
 - **Broadcast Audio Mastering (`-14 LUFS`)**: Integrated dynamic compression and loudness normalization (`loudnorm=I=-14:TP=-1.5:LRA=11`) with 192 kbps AAC output for Shorts/Reels/TikTok punch.
 - **Per-Screen Word Chunking**: Adjust display grouping on the fly (`1 Word`, `2 Words`, `3 Words Viral Sweet-Spot`, `4 Words`, `5 Words`, or `Full Phrase`).
 

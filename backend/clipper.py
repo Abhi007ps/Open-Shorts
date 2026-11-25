@@ -207,7 +207,7 @@ def generate_preview_frame(
                     mid_idx = w_i
                     break
 
-        if style_p == "skyglow":
+        if style_p in ("studio_flow", "skyglow"):
             word_objs = [{"word": w.upper() if subtitle_config.get('is_uppercase', True) else w, "start": 0.0, "end": 10.0} for w in words_list]
             seg_to_render = [{
                 "start": 0.0,
@@ -219,15 +219,15 @@ def generate_preview_frame(
                 segments=seg_to_render,
                 output_path=preview_ass,
                 font_family=subtitle_config.get("font_family", "Montserrat ExtraBold"),
-                font_size=subtitle_config.get("font_size", 74),
-                primary_color=subtitle_config.get("primary_color", "#A8F0F2"),
-                highlight_color=subtitle_config.get("highlight_color", "#7DFF14"),
+                font_size=subtitle_config.get("font_size", 62),
+                primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
+                highlight_color=subtitle_config.get("highlight_color", "#38BDF8"),
                 outline_color=subtitle_config.get("outline_color", "#000000"),
                 outline_width=subtitle_config.get("outline_width", 2),
                 shadow_depth=subtitle_config.get("shadow_depth", 2),
                 position_x=subtitle_config.get("position_x", 50.0),
                 position_y=subtitle_config.get("position_y", 50.0),
-                style_preset="skyglow",
+                style_preset="studio_flow",
                 is_uppercase=False,
                 sync_offset_ms=0,
                 censor_profanity=subtitle_config.get("censor_profanity", True),
@@ -769,15 +769,16 @@ def render_clip(
     if clip_subtitles and subtitles_enabled:
         rand_suffix = uuid.uuid4().hex[:6]
         clip_ass_path = os.path.join(TEMP_DIR, f"{clip_id}_{rand_suffix}_subs.ass")
-        sub_preset = subtitle_config.get("style_preset", "skyglow")
-        default_sub_font = "Montserrat ExtraBold" if sub_preset == "skyglow" else "Arial Black"
+        raw_preset = subtitle_config.get("style_preset", "studio_flow")
+        sub_preset = "studio_flow" if raw_preset in ("studio_flow", "skyglow") else raw_preset
+        default_sub_font = "Montserrat ExtraBold" if sub_preset == "studio_flow" else "Arial Black"
         generate_ass_subtitles(
             segments=clip_subtitles,
             output_path=clip_ass_path,
             font_family=subtitle_config.get("font_family", default_sub_font),
-            font_size=subtitle_config.get("font_size", 74 if sub_preset == "skyglow" else 56),
-            primary_color=subtitle_config.get("primary_color", "#A8F0F2" if sub_preset == "skyglow" else "#FFFFFF"),
-            highlight_color=subtitle_config.get("highlight_color", "#7DFF14" if sub_preset == "skyglow" else "#00FF66"),
+            font_size=subtitle_config.get("font_size", 62 if sub_preset == "studio_flow" else 56),
+            primary_color=subtitle_config.get("primary_color", "#FFFFFF"),
+            highlight_color=subtitle_config.get("highlight_color", "#38BDF8" if sub_preset == "studio_flow" else "#00FF66"),
             outline_color=subtitle_config.get("outline_color", "#000000"),
             outline_width=subtitle_config.get("outline_width", 2),
             shadow_depth=subtitle_config.get("shadow_depth", 2),

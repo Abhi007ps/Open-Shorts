@@ -64,7 +64,7 @@ OpenShorts Studio Pro features an obsidian dark-mode interface with a 2-pane Non
 - Multi-word phrases maintain strict monotonic intervals (`end >= start + 0.04s`) with **zero blank gaps between words**, eliminating subtitle blinking.
 
 ### Viral Caption Presets:
-- **SkyGlow**: Upright `Poppins Black` with dual-pass neon glow (`#22FF66`, `#00EEFF`, `#FFE100` palette cycling), continuous 60fps subtle zoom-in, zero-gap phrase bridging, per-character fade sweep, and subtle upward exit glide.
+- **Studio Flow**: Upright `Montserrat ExtraBold` with soft feathered ambient shadow (`FlowShadow`), crisp foreground typography (`FlowMain`), zero-gap phrase bridging, continuous 60fps subtle zoom-in, and smooth 3-state word color flow (dimmed upcoming $\to$ active highlight $\to$ spoken white).
 - **Speed Viral**: Bold `Impact` high-contrast kinetic word highlights tailored for fast-paced highlights.
 - **Dark Box**: Clean, high-contrast translucent dark backing card (`BorderStyle=3`) with vibrant highlight text.
 - **Minimal Sans**: Crisp modern subtitle typography without heavy outlines or boxes.
