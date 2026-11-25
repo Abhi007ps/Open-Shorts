@@ -1646,14 +1646,22 @@ function initEventListeners() {
   const btnChangeExportFolder = document.getElementById("btn-change-export-folder");
   if (btnChangeExportFolder) {
     btnChangeExportFolder.addEventListener("click", async () => {
-      let currentPath = "";
-      try {
-        const r = await fetch("/api/export_folder");
-        const d = await r.json();
-        currentPath = d.path || "";
-      } catch (_) {}
-      const newPath = prompt("Enter new export destination folder path:", currentPath);
-      if (newPath !== null && newPath.trim() !== "") {
+      let newPath = "";
+      if (isDesktopApp() && typeof window.pywebview.api.pick_export_folder === "function") {
+        try {
+          newPath = (await window.pywebview.api.pick_export_folder()) || "";
+        } catch (_) {}
+      } else {
+        let currentPath = "";
+        try {
+          const r = await fetch("/api/export_folder");
+          const d = await r.json();
+          currentPath = d.path || "";
+        } catch (_) {}
+        const prompted = prompt("Enter new export destination folder path:", currentPath);
+        if (prompted !== null) newPath = prompted;
+      }
+      if (newPath && newPath.trim() !== "") {
         try {
           const res = await fetch("/api/set_export_folder", {
             method: "POST",

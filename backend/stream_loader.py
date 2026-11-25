@@ -691,6 +691,11 @@ def download_stream_slice(
     if direct_ok:
         downloaded_file = final_path
     else:
+        if os.path.exists(final_path):
+            try:
+                os.remove(final_path)
+            except Exception:
+                pass
         try:
             if cancel_event and cancel_event.is_set():
                 raise JobCancelledError("Stream download cancelled by user")
