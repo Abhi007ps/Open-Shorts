@@ -46,6 +46,7 @@ STATE_LOCK = threading.RLock()
 
 # Allowed video file extensions for local source selection
 ALLOWED_VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".ts", ".avi", ".m4v"}
+ALLOWED_WHISPER_MODELS = {"large-v3-turbo-q5_0", "small.en"}
 
 # Strict regex for pulling models: starts with alnum, only safe characters, max 80 chars
 MODEL_NAME_REGEX = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,79}$')
@@ -1312,6 +1313,8 @@ def _do_transcribe(req: TranscribeReq, cancel_event: Optional[threading.Event] =
         # Pick model if specified (auto-download if missing on disk)
         chosen_model = None
         if req.model_name:
+            if req.model_name not in ALLOWED_WHISPER_MODELS:
+                raise HTTPException(status_code=400, detail="Unsupported Whisper model")
             cand1 = os.path.join(MODELS_DIR, f"ggml-{req.model_name}.bin")
             cand2 = os.path.join(MODELS_DIR, req.model_name)
             if os.path.isfile(cand1) and os.path.getsize(cand1) > 1_000_000:
@@ -1445,6 +1448,8 @@ def _do_transcribe_all_clips(req: TranscribeAllClipsReq, cancel_event: Optional[
 
     chosen_model = None
     if req.model_name:
+        if req.model_name not in ALLOWED_WHISPER_MODELS:
+            raise HTTPException(status_code=400, detail="Unsupported Whisper model")
         cand1 = os.path.join(MODELS_DIR, f"ggml-{req.model_name}.bin")
         cand2 = os.path.join(MODELS_DIR, req.model_name)
         if os.path.isfile(cand1) and os.path.getsize(cand1) > 1_000_000:

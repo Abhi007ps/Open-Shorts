@@ -1,6 +1,5 @@
 import os
 import re
-import math
 import urllib.request
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -174,81 +173,6 @@ def resolve_font_family(font_family: str, style_preset: str = "") -> str:
         return font_family
     return font_family or "Arial Black"
 
-SKYGLOW_THEMES = {
-    "green": {
-        "fill": "&H0014FF7D&",
-        "edge": "&H0014FF7D&",
-        "edge_w": 0.5,
-        "shadow": "&H000A5314&",
-        "glow": "&H0014FF50&",
-        "italic": 0,
-        "size_mult": 1.0,
-        "shadow_d": 6,
-    },
-    "cyan": {
-        "fill": "&H00F2F0A8&",
-        "edge": "&H00FFFFEF&",
-        "edge_w": 1.5,
-        "shadow": "&H0040230C&",
-        "glow": "&H00E8D92B&",
-        "italic": 0,
-        "size_mult": 1.0,
-        "shadow_d": 6,
-    },
-    "peak": {
-        "fill": "&H0050FF1E&",
-        "edge": "&H0050FF1E&",
-        "edge_w": 0.5,
-        "shadow": "&H00063A06&",
-        "glow": "&H0014FF50&",
-        "italic": -1,
-        "size_mult": 1.35,
-        "shadow_d": 9,
-    },
-}
-
-_SKYGLOW_GREEN_TRIGGERS = (
-    "OH MY", "GOSH", "GOD", "NO WAY", "WHAT THE", "LET'S GO", "BACKFLIP",
-    "CRAZY", "INSANE", "WAIT", "LOOK AT", "BRO", "HOLY", "KILL", "DEAD",
-    "STOP", "HAHA", "LMAO", "SH*T", "F*CK", "AS*"
-)
-_SKYGLOW_PEAK_TRIGGERS = ("BOOM", "DAMN", "SH*T", "F*CK", "CLUTCH", "GOAT")
-
-def _classify_skyglow_theme(text: str, words: list, seg_idx: int, prev_theme: str, consec_cyan: int = 0) -> str:
-    """Classifies each phrase into 'peak', 'green', or 'cyan' based on energy and rhythm."""
-    u = str(text or "").upper().strip()
-    if len(words) <= 2 and len(u) <= 16:
-        if "!" in u or re.search(r'([A-Z])\1{2,}', u) or any(kw in u for kw in _SKYGLOW_PEAK_TRIGGERS):
-            return "peak"
-
-    if any(tr in u for tr in _SKYGLOW_GREEN_TRIGGERS):
-        return "green"
-    if u.endswith(("!", "?")) and prev_theme != "green":
-        return "green"
-
-    if consec_cyan >= 2:
-        return "green"
-    return "cyan"
-
-def _wrap_skyglow(tokens: List[str], max_chars: int = 20) -> List[str]:
-    """Wraps progressive tokens into up to 2 centered lines without upper-line reflow."""
-    if not tokens:
-        return []
-    lines = []
-    cur = tokens[0]
-    for tok in tokens[1:]:
-        if len(lines) == 0 and len(cur) + 1 + len(tok) > max_chars:
-            lines.append(cur)
-            cur = tok
-        else:
-            cur += " " + tok
-    lines.append(cur)
-    return lines[:2]
-
-def _grow(tau: float) -> float:
-    """Exponential ease-out growth curve measured from reference video."""
-    return 1.0 + 0.08 * (1.0 - math.exp(-max(tau, 0.0) / 0.6))
-
 def generate_ass_subtitles(
     segments: List[Dict[str, Any]],
     output_path: str,
@@ -261,7 +185,7 @@ def generate_ass_subtitles(
     shadow_depth: int = 2,
     position_x: float = 50.0, # percentage from left (0 = left, 50 = center, 100 = right)
     position_y: float = 50.0, # percentage from top (0 = top, 50 = middle, 100 = bottom)
-    style_preset: str = "skyglow", # skyglow, speed, box, clean, hormozi, mrbeast, neon, fire
+    style_preset: str = "studio_flow", # studio_flow, speed, box, clean (skyglow aliased to studio_flow)
     is_uppercase: bool = True,
     play_res_x: int = 1080,
     play_res_y: int = 1920,

@@ -542,22 +542,6 @@ def build_composite_filtergraph(
     else:
         gameplay_crop_filter = ""
 
-    # Exponential Facecam Impact Punch: +15% peak, 0.08s rise, 0.12s exponential decay
-    cam_climax_pulse = ""
-    if climax_zoom_enabled and climax_rel_time is not None and climax_rel_time >= 0:
-        t0 = max(0.0, float(climax_rel_time))
-        tp = t0 + 0.08
-        t1 = tp + 0.12
-        zoom_expr = (
-            f"1+if(between(t,{t0:.3f},{tp:.3f}),0.15*(t-{t0:.3f})/0.08,"
-            f"if(between(t,{tp:.3f},{t1:.3f}),0.15*(1-(t-{tp:.3f})/0.12)*exp(-2.5*(t-{tp:.3f})/0.12),0))"
-        )
-        cam_climax_pulse = (
-            f"scale=w='trunc({webcam_w}*({zoom_expr})/2)*2':"
-            f"h='trunc({webcam_h}*({zoom_expr})/2)*2':"
-            f"eval=frame:flags=bilinear,crop={webcam_w}:{webcam_h}:(iw-ow)/2:(ih-oh)/2,"
-        )
-
     if not webcam_crop:
         webcam_crop = {"x": 22, "y": 160, "w": 480, "h": 270}
     cx = max(0, min(src_w - 32, int(webcam_crop.get("x", 0))))
@@ -623,6 +607,25 @@ def build_composite_filtergraph(
             webcam_x = int(webcam_x)
         webcam_y = int(webcam_y)
         webcam_crop_filter = f"crop={cw}:{ch}:{cx}:{cy},"
+
+    webcam_w = (int(webcam_w) // 2) * 2
+    webcam_h = (int(webcam_h) // 2) * 2
+
+    # Exponential Facecam Impact Punch: +15% peak, 0.08s rise, 0.12s exponential decay
+    cam_climax_pulse = ""
+    if climax_zoom_enabled and climax_rel_time is not None and climax_rel_time >= 0:
+        t0 = max(0.0, float(climax_rel_time))
+        tp = t0 + 0.08
+        t1 = tp + 0.12
+        zoom_expr = (
+            f"1+if(between(t,{t0:.3f},{tp:.3f}),0.15*(t-{t0:.3f})/0.08,"
+            f"if(between(t,{tp:.3f},{t1:.3f}),0.15*(1-(t-{tp:.3f})/0.12)*exp(-2.5*(t-{tp:.3f})/0.12),0))"
+        )
+        cam_climax_pulse = (
+            f"scale=w='trunc({webcam_w}*({zoom_expr})/2)*2':"
+            f"h='trunc({webcam_h}*({zoom_expr})/2)*2':"
+            f"eval=frame:flags=bilinear,crop={webcam_w}:{webcam_h}:(iw-ow)/2:(ih-oh)/2,"
+        )
 
     # 1 & 2. AI Neural Pixel Generator / Detail Synthesis Engine
     if pixel_generator and pixel_generator_mode != "off":
@@ -742,7 +745,7 @@ def build_composite_filtergraph(
 
     if is_split_screen:
         if external_cam_input_idx is not None:
-            cam_chain = f"[{external_cam_input_idx}:v]setpts=PTS-STARTPTS,scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{cam_climax_pulse}{enhance_cam}format=rgba[cam_raw]"
+            cam_chain = f"[{external_cam_input_idx}:v]setpts=PTS-STARTPTS,scale={webcam_w}:{webcam_h}:force_original_aspect_ratio=increase:flags=spline+accurate_rnd+full_chroma_int,crop={webcam_w}:{webcam_h},{cam_climax_pulse}{enhance_cam}format=rgba[cam_raw]"
         else:
             cam_chain = f"[0:v]setpts=PTS-STARTPTS,{webcam_crop_filter}{cam_pre_deblock}scale={webcam_w}:{webcam_h}:flags=spline+accurate_rnd+full_chroma_int,{cam_climax_pulse}{enhance_cam}format=rgba[cam_raw]"
 

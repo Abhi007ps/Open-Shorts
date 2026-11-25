@@ -1144,46 +1144,6 @@ input[type="checkbox"]:checked::after {
   text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
 }
 
-.style-preview-hormozi {
-  font-family: Impact, "Arial Black", sans-serif;
-  text-transform: uppercase;
-}
-.style-preview-hormozi .preview-word-white {
-  color: #FFFFFF;
-  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
-}
-.style-preview-hormozi .preview-word-gold {
-  color: #FFDE00;
-  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
-}
-
-.style-preview-mrbeast {
-  font-family: Impact, "Arial Black", sans-serif;
-  text-transform: uppercase;
-}
-.style-preview-mrbeast .preview-word-yellow {
-  color: #FFF200;
-  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
-}
-.style-preview-mrbeast .preview-word-green {
-  color: #00FF66;
-  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
-}
-
-.style-preview-neon {
-  font-family: var(--font-sans);
-  font-weight: 800;
-  text-transform: uppercase;
-}
-.style-preview-neon .preview-word-cyan {
-  color: #00F2FE;
-  text-shadow: 0 0 6px rgba(0, 242, 254, 0.7);
-}
-.style-preview-neon .preview-word-magenta {
-  color: #FF007A;
-  text-shadow: 0 0 6px rgba(255, 0, 122, 0.7);
-}
-
 .style-preview-box .preview-word-boxed {
   background: rgba(0, 0, 0, 0.75);
   color: #FFFFFF;
@@ -1192,12 +1152,6 @@ input[type="checkbox"]:checked::after {
   font-family: var(--font-sans);
   font-weight: 700;
   border: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-.style-preview-fire .preview-word-fire {
-  color: #FF7A00;
-  font-family: Impact, sans-serif;
-  text-shadow: 0 0 8px rgba(255, 122, 0, 0.6);
 }
 
 .style-preview-clean {

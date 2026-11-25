@@ -197,7 +197,7 @@ def generate_preview_frame(
         # Format sample with active word highlighted
         hl_color_ass = hex_to_ass_color(subtitle_config.get("highlight_color", "#FFDE00"))
         pri_color_ass = hex_to_ass_color(subtitle_config.get("primary_color", "#FFFFFF"))
-        style_p = subtitle_config.get("style_preset", "hormozi")
+        style_p = subtitle_config.get("style_preset", "studio_flow")
         
         # Determine which word to highlight (based on timestamp if words have timing, else mid word)
         mid_idx = len(words_list) // 2 if len(words_list) > 1 else 0
@@ -333,19 +333,20 @@ def generate_preview_frame(
         "-vframes", "1",
         output_png
     ])
-    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    
-    # Cleanup preview ASS & hook PNG
-    if preview_ass and os.path.exists(preview_ass):
-        try:
-            os.remove(preview_ass)
-        except Exception:
-            pass
-    if hook_png and os.path.exists(hook_png):
-        try:
-            os.remove(hook_png)
-        except Exception:
-            pass
+    try:
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    finally:
+        # Cleanup preview ASS & hook PNG
+        if preview_ass and os.path.exists(preview_ass):
+            try:
+                os.remove(preview_ass)
+            except Exception:
+                pass
+        if hook_png and os.path.exists(hook_png):
+            try:
+                os.remove(hook_png)
+            except Exception:
+                pass
             
     return output_png
 
